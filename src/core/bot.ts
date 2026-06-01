@@ -8,6 +8,7 @@ import { PluginSystem } from "../plugin/index.js";
 import { setCcPluginDirs } from "../ai/claude-code.js";
 import { createQqMcpServer } from "../mcp/qq-server.js";
 import { McpHost } from "../mcp/host.js";
+import { getScheduler, startScheduler } from "../scheduler/index.js";
 
 // ---------------------------------------------------------------------------
 // Default logger
@@ -90,18 +91,6 @@ function createSessionStore(): SessionStore {
   };
 }
 
-function createSchedulerRef(): SchedulerRef {
-  const jobs = new Map<string, NodeJS.Timeout>();
-  return {
-    addJob(fn, trigger, id) {
-      const ms = trigger.type === "interval" ? trigger.minutes * 60_000 : 300_000;
-      jobs.set(id, setInterval(fn, ms));
-    },
-    removeJob(id) { clearInterval(jobs.get(id)); jobs.delete(id); },
-    getJob(id) { return jobs.get(id); },
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Bot
 // ---------------------------------------------------------------------------
@@ -122,7 +111,7 @@ export class Bot {
     this.adapter = adapter;
     this.logger = createLogger("bot");
     this.sessionStore = sessionStore ?? createSessionStore();
-    this.scheduler = scheduler ?? createSchedulerRef();
+    this.scheduler = scheduler ?? getScheduler();
 
     this.botCtx = {
       config: {} as BotConfig,
@@ -209,8 +198,34 @@ export class Bot {
     );
     await this.mcpHost.start();
 
+    // 恢复持久化定时任务。定时器保存在内存中，进程重启后必须从各 session 的
+    // .schedules.json 重新加载，否则磁盘上有任务但不会触发。
+    this.restoreScheduledTasks();
+
     this.started = true;
     this.logger.info("Bot 已启动");
+  }
+
+  private restoreScheduledTasks(): void {
+    const scheduler = startScheduler();
+    const sessionsDir = this.config.paths.sessionsDir;
+
+    if (!fs.existsSync(sessionsDir)) {
+      this.logger.info("Scheduler 已启动，未发现 sessions 目录");
+      return;
+    }
+
+    let restored = 0;
+    for (const entry of fs.readdirSync(sessionsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const sessionDir = path.join(sessionsDir, entry.name);
+      if (!fs.existsSync(path.join(sessionDir, ".schedules.json"))) continue;
+      scheduler.removeAllFor(sessionDir);
+      scheduler.reloadFrom(sessionDir);
+      restored += 1;
+    }
+
+    this.logger.info(`Scheduler 已启动，已扫描 ${restored} 个定时任务会话`);
   }
 
   async stop(): Promise<void> {

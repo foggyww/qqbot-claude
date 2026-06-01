@@ -16,7 +16,7 @@ import { getScheduler } from "../../scheduler/index.js";
 
 const SYSTEM_PROMPT = `你是定时任务管理助手。用户想设置、删除或查看定时任务。
 
-后台有一个 APScheduler 调度器在运行，你通过 schedule CLI 写入 .schedules.json 后，调度器会自动加载并在到点时真正触发执行。到点后会向 AI 发送触发消息，AI 再决定具体做什么。
+后台有一个内置 cron 调度器在运行，你通过 schedule CLI 写入 .schedules.json 后，调度器会自动加载并在到点时真正触发执行。到点后会向 AI 发送触发消息，AI 再决定具体做什么。
 
 可用命令（通过 Bash 执行）：
   schedule list <session_dir>                    — 查看所有任务

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+data/
+.env
+.qqbotrc.toml
+*.log
+coverage/
+.DS_Store

@@ -1,0 +1,118 @@
+# QQBot 配置文件模板
+# 复制此文件为 .qqbotrc.toml 并修改对应字段
+# QQBot 会从以下位置读取配置（优先级从高到低）：
+#   1. 命令行参数
+#   2. 当前目录 .qqbotrc.toml
+#   3. 用户目录 ~/.qqbotrc.toml
+#   4. 环境变量
+
+# -------------------- QQ 适配器 --------------------
+[qq]
+# QQ 账号
+account = 0
+# 适配器类型: "napcat" | "icqq"
+platform = "napcat"
+
+# -------------------- 路径 --------------------
+[paths]
+# 会话数据存储目录
+sessions_dir = "./sessions"
+# Claude Code 项目配置目录
+projects_dir = "./.claude/projects"
+# 工作区根目录
+workspace_dir = "./workspace"
+# QQBot 项目目录
+project_dir = "."
+
+# -------------------- 环境变量（注入 Claude Code 子进程） --------------------
+[env]
+# 必填：DeepSeek / Anthropic API Key
+DEEPSEEK_API_KEY = "sk-xxxxxxxx"
+ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic"
+ANTHROPIC_AUTH_TOKEN = "sk-xxxxxxxx"
+
+# 模型名称
+ANTHROPIC_MODEL = "deepseek-v4-pro"
+ANTHROPIC_DEFAULT_OPUS_MODEL = "deepseek-v4-pro"
+ANTHROPIC_DEFAULT_SONNET_MODEL = "deepseek-v4-pro"
+ANTHROPIC_DEFAULT_HAIKU_MODEL = "deepseek-v4-flash"
+CLAUDE_CODE_SUBAGENT_MODEL = "deepseek-v4-pro"
+
+# 行为控制
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1"
+CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK = "1"
+CLAUDE_CODE_EFFORT_LEVEL = "high"
+
+# -------------------- 模型映射 --------------------
+[models]
+# 默认模型
+default = "flash"
+flash = "deepseek-v4-flash"
+pro = "deepseek-v4-pro"
+
+# -------------------- 努力程度 --------------------
+[efforts]
+# 默认努力程度: "low" | "medium" | "high"
+default = "high"
+
+# -------------------- 通用设置 --------------------
+[settings]
+# 单次 AI 调用超时（秒）
+timeout = 180
+# 无权限时的回复，设为 "" 表示不回复
+no_permission_reply = "无权限"
+
+# -------------------- 角色权限 --------------------
+[roles]
+# 格式: QQ号 = 等级
+# 0 = 访客（默认）
+# 1 = 用户
+# 2 = 可信用户
+# 3 = 管理员
+# 示例: "123456789" = 3
+
+# -------------------- 群组白名单 --------------------
+[group_whitelist]
+# bot 只在白名单群组中响应消息
+ids = []
+
+# -------------------- 提示词 --------------------
+[prompt]
+# bot 主人的 QQ 号，用于系统提示词中的身份定位
+master_qq = 0
+
+# -------------------- 工具白名单 --------------------
+[tools]
+# Claude Code 可用的工具列表
+allowed = [
+    "Read",
+    "Bash",
+    "Edit",
+    "Write",
+    "WebSearch",
+    "WebFetch",
+    "mcp__qqbot__send_message",
+    "mcp__qqbot__sleep",
+    "mcp__qqbot__get_user_mapping",
+    "mcp__qqbot__get_group_msg_history",
+    "mcp__qqbot__get_group_members",
+    "mcp__qqbot__get_group_list",
+    "mcp__qqbot__get_private_msg_history",
+    "mcp__qqbot__get_user_info",
+    "mcp__qqbot__delete_message",
+    "mcp__qqbot__get_my_info",
+    "mcp__qqbot-steam__steam_get_player_summaries",
+    "mcp__qqbot-steam__steam_get_friend_list",
+    "mcp__qqbot-steam__steam_get_owned_games",
+    "mcp__qqbot-steam__steam_get_recently_played_games",
+    "mcp__qqbot-steam__steam_get_user_stats_for_game",
+    "mcp__qqbot-steam__steam_get_player_achievements",
+    "mcp__qqbot-steam__steam_get_global_achievement_percentages",
+    "mcp__qqbot-steam__steam_search_games",
+    "mcp__qqbot-steam__steam_resolve_vanity_url",
+]
+
+# -------------------- Steam 定时任务（可选） --------------------
+[steam_watcher]
+# Steam 状态轮询间隔（分钟），设为 0 禁用
+interval_minutes = 5

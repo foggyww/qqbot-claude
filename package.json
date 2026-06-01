@@ -1,0 +1,44 @@
+{
+  "name": "qqbot-claude",
+  "version": "3.0.0",
+  "description": "AI-powered QQ bot framework with Claude Code integration",
+  "type": "module",
+  "main": "dist/src/core/index.js",
+  "bin": {
+    "qqbot": "dist/src/cli.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "clean": "node scripts/clean-dist.mjs",
+    "build": "npm run clean && tsc && node scripts/copy-assets.mjs",
+    "dev": "tsx src/core/index.ts",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "cosmiconfig": "^9.0.0",
+    "toml": "^3.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@types/node": "^22.0.0",
+    "eslint": "^9.0.0",
+    "globals": "^16.5.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.60.0",
+    "vitest": "^3.0.0"
+  },
+  "keywords": [
+    "qq",
+    "bot",
+    "claude",
+    "ai",
+    "chatbot"
+  ],
+  "license": "MIT",
+  "author": "qqbot contributors"
+}

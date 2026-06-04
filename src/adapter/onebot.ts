@@ -71,6 +71,17 @@ function segmentsToRawMessage(message: unknown): string {
   return message.map((seg) => segmentToCqCode(seg as Record<string, unknown>)).join("");
 }
 
+/**
+ * Convert the common AI mistake of writing plain `@123456` into a OneBot CQ at
+ * segment. Existing CQ codes are left untouched. This is only a safety net; the
+ * prompts and MCP tool schema also teach Claude to emit CQ codes directly.
+ */
+function normalizeOutgoingMessage(message: string): string {
+  return message.replace(/(^|[^\w[\]])@(\d{6,12})(?=\b|\s|$)/g, (_m, prefix: string, qq: string) => {
+    return `${prefix}[CQ:at,qq=${qq}]`;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Event parsing
 // ---------------------------------------------------------------------------
@@ -217,16 +228,18 @@ export class OneBotAdapter implements QQAdapter {
   // -----------------------------------------------------------------------
 
   async sendPrivateMsg(userId: number, message: string): Promise<void> {
+    const normalizedMessage = normalizeOutgoingMessage(message);
     await this.callApi("send_private_msg", {
       user_id: userId,
-      message,
+      message: normalizedMessage,
     });
   }
 
   async sendGroupMsg(groupId: number, message: string): Promise<void> {
+    const normalizedMessage = normalizeOutgoingMessage(message);
     await this.callApi("send_group_msg", {
       group_id: groupId,
-      message,
+      message: normalizedMessage,
     });
   }
 

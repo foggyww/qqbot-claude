@@ -142,7 +142,7 @@ export class Bot {
 
     // Make configured env available to in-process plugins as well as Claude subprocesses.
     for (const [key, value] of Object.entries(config.env)) {
-      if (value && process.env[key] === undefined) {
+      if (value) {
         process.env[key] = value;
       }
     }

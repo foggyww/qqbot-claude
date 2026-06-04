@@ -11,7 +11,10 @@ const TOOLS: McpToolDefinition[] = [
       properties: {
         type: { type: "string", enum: ["private", "group"] },
         target: { type: "integer" },
-        message: { type: "string", description: "1-3 sentences, plain text, no Markdown" },
+        message: {
+          type: "string",
+          description: "1-3 sentences, plain text, no Markdown. To @mention a QQ user, use CQ code [CQ:at,qq=QQ号], e.g. [CQ:at,qq=123456]; do not write plain @123456.",
+        },
       },
       required: ["type", "target", "message"],
     },

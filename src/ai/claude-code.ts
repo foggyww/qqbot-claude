@@ -40,6 +40,7 @@ interface RunClaudeOptions {
  */
 async function _runClaude(opts: RunClaudeOptions): Promise<string> {
   const config = getConfig();
+  const model = opts.model ?? config.models[config.models.default] ?? config.models.flash;
 
   // Ensure session directory exists
   fs.mkdirSync(opts.sessionDir, { recursive: true });
@@ -64,8 +65,8 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
   if (opts.systemPrompt) {
     claudeArgs.push("--append-system-prompt", opts.systemPrompt);
   }
-  if (opts.model) {
-    claudeArgs.push("--model", opts.model);
+  if (model) {
+    claudeArgs.push("--model", model);
   }
   if (opts.effort) {
     claudeArgs.push("--effort", opts.effort);

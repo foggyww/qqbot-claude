@@ -16,6 +16,11 @@ import { getConfig } from "../core/config.js";
 function log(msg: string): void { console.log(`[scheduler] ${msg}`); }
 function logErr(msg: string): void { console.error(`[scheduler] ${msg}`); }
 
+// Node.js stores setTimeout delays as signed 32-bit integers. Larger values
+// overflow and are coerced to 1ms, which can turn yearly/date-specific cron
+// jobs into tight infinite loops after they fire once.
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
 // ---------------------------------------------------------------------------
 // Cron field parser
 // ---------------------------------------------------------------------------
@@ -146,7 +151,16 @@ class SchedulerImpl implements SchedulerRef {
         try {
           const next = nextCronTime(trigger.expression, new Date());
           const delay = next.getTime() - Date.now();
-          if (delay <= 0) { scheduleNext(); return; }
+          if (delay <= 0) { setTimeout(scheduleNext, 0); return; }
+
+          if (delay > MAX_TIMEOUT_MS) {
+            const timer = setTimeout(scheduleNext, MAX_TIMEOUT_MS);
+            const entry = this.jobs.get(id);
+            if (entry) entry.timer = timer;
+            log(`job ${id} next run exceeds max timeout; waiting in chunks until ${next.toISOString()}`);
+            return;
+          }
+
           const timer = setTimeout(() => {
             fn().catch((e: unknown) => logErr(`job ${id}: ${e}`)).finally(scheduleNext);
           }, delay);
@@ -209,12 +223,12 @@ async function fireCronJob(sessionDir: string, triggerMsg: string): Promise<void
   const now = new Date();
   const nowStr = now.toISOString().replace("T", " ").slice(5, 16);
 
-  const fullMsg = `【定时任务触发】当前时间 ${nowStr}，任务：${triggerMsg}\n请按需执行，用 qqmsg 发消息。完成后 stdout 输出 ok`;
+  const fullMsg = `【定时任务触发】当前时间 ${nowStr}，任务：${triggerMsg}\n请按需执行，用 send_message 发消息。完成后 stdout 输出 ok`;
 
   try {
     const config = getConfig();
-    let model: string | undefined;
-    let effort: string | undefined;
+    let model: string | undefined = config.models[config.models.default] ?? config.models.flash;
+    let effort: string | undefined = config.efforts.default;
 
     const mf = path.join(sessionDir, ".model");
     if (fs.existsSync(mf)) {
@@ -237,7 +251,7 @@ async function fireCronJob(sessionDir: string, triggerMsg: string): Promise<void
       }
     }
 
-    const noAt = "触发定时任务。用 send_message 回复。完成后只输出 ok。";
+    const noAt = "触发定时任务。用 send_message 回复。需要艾特 QQ 用户时，message 必须使用 OneBot CQ 码 [CQ:at,qq=QQ号]，不要直接写 @QQ号。完成后只输出 ok。";
     const reply = await askClaude(fullMsg, sessionDir, sessionId, noAt, model, effort);
     log(`fired ok, stdout=${reply.slice(0, 100)}`);
   } catch (e: unknown) {

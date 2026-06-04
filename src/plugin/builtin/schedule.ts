@@ -18,13 +18,22 @@ const SYSTEM_PROMPT = `你是定时任务管理助手。用户想设置、删除
 
 后台有一个内置 cron 调度器在运行，你通过 schedule CLI 写入 .schedules.json 后，调度器会自动加载并在到点时真正触发执行。到点后会向 AI 发送触发消息，AI 再决定具体做什么。
 
+你必须用 Bash 执行 schedule 命令完成用户要求，不能只给建议，不能让用户手动一条条添加。
+本命令的返回值会由 bot 自动回复给用户，严禁调用 send_message 或 delete_message。
+如果需要理解上下文，可以调用只读 QQ MCP 工具，例如 get_group_msg_history、get_private_msg_history、get_group_members、get_user_info、get_user_mapping、get_my_info。
+如果用户要求批量添加多个提醒，就连续执行多条 schedule add，每个时间点一条。
+
 可用命令（通过 Bash 执行）：
   schedule list <session_dir>                    — 查看所有任务
-  schedule add <session_dir> <名称> <cron> <触发消息>  — 添加
+  schedule add <session_dir> <名称> <cron> <触发消息>  — 添加一条任务
   schedule remove <session_dir> <名称>          — 删除
   schedule enable/disable <session_dir> <名称>  — 启用/禁用
 
-会话目录(session_dir)是当前工作目录的路径（cwd）。
+session_dir 必须使用下面用户消息里提供的绝对路径。Claude 子进程 cwd 也是该目录，但仍要显式传 session_dir 参数。
+
+重要：cron 表达式和触发消息包含空格，执行 Bash 时必须加引号，避免空格拆参和 * 被 glob 展开。
+正确示例：
+  schedule add /path/to/session "major-0602-1820" "20 10 2 6 *" "现在18:20了，群友们准备看比赛啦，请艾特所有人"
 
 cron 格式：分 时 日 月 周 (五字段，空格分隔)，时区 UTC。
 例如 UTC 每天 0 点 = 0 0 * * *
@@ -70,7 +79,10 @@ export async function handle(
   // With args: delegate to Claude
   const model = store.loadModel(sessionDir);
   const effort = store.loadEffort(sessionDir);
-  const sessionId = store.getSessionId(sessionDir);
+  // Use a fresh Claude Code invocation for schedule management. Reusing the
+  // normal chat session leaks conversational/persona context into this command
+  // and makes Claude reply via QQ tools instead of executing schedule CLI.
+  const sessionId = null;
 
   const p = path.join(sessionDir, ".schedules.json");
   let existing = "";
@@ -93,7 +105,8 @@ export async function handle(
     "",
     `当前已有定时任务(session_dir=${sessionDir}):\n${existing || "(无)"}`,
     "",
-    "请根据用户意图，用 Bash 执行 schedule 命令来管理定时任务。",
+    "请根据用户意图，用 Bash 执行 schedule 命令来管理定时任务。批量任务必须逐条执行 schedule add。",
+    "可以用只读 QQ MCP 工具获取聊天上下文，但不要调用 send_message/delete_message，不要让用户手动添加。",
     "完成后用 stdout 输出确认（换算回用户时区显示触发时间）。",
   ].join("\n");
 

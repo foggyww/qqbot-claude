@@ -2,6 +2,8 @@
 import * as http from "node:http";
 import type { Logger, McpServer } from "../core/types.js";
 
+const MAX_BODY_SIZE_BYTES = 1_048_576;
+
 interface JsonRpcRequest {
   jsonrpc?: string;
   id?: number | string | null;
@@ -32,6 +34,9 @@ export class McpHost {
     private readonly port = Number(process.env.QQBOT_MCP_PORT ?? 8765),
   ) {
     for (const server of servers) {
+      if (this.servers.has(server.name)) {
+        throw new Error(`Duplicate MCP server name: ${server.name}`);
+      }
       this.servers.set(server.name, server);
     }
   }
@@ -83,7 +88,16 @@ export class McpHost {
       return;
     }
 
-    const body = await this.readBody(req);
+    let body: string;
+    try {
+      body = await this.readBody(req);
+    } catch (err: unknown) {
+      if (err instanceof RequestBodyTooLargeError) {
+        this.writeJson(res, 413, makeError(null, -32600, err.message));
+        return;
+      }
+      throw err;
+    }
     let rpc: JsonRpcRequest;
     try {
       rpc = JSON.parse(body) as JsonRpcRequest;
@@ -138,8 +152,14 @@ export class McpHost {
 
   private async readBody(req: http.IncomingMessage): Promise<string> {
     const chunks: Buffer[] = [];
+    let totalSize = 0;
     for await (const chunk of req) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalSize += buffer.length;
+      if (totalSize > MAX_BODY_SIZE_BYTES) {
+        throw new RequestBodyTooLargeError(`Request body too large: limit ${MAX_BODY_SIZE_BYTES} bytes`);
+      }
+      chunks.push(buffer);
     }
     return Buffer.concat(chunks).toString("utf-8");
   }
@@ -147,5 +167,12 @@ export class McpHost {
   private writeJson(res: http.ServerResponse, status: number, body: unknown): void {
     res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
     res.end(body === null ? "" : JSON.stringify(body));
+  }
+}
+
+class RequestBodyTooLargeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RequestBodyTooLargeError";
   }
 }

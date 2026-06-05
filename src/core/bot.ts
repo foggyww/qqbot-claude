@@ -5,7 +5,7 @@ import type { RawMessageEvent } from "./context.js";
 import { dispatchMessage, setSessionStore } from "./router.js";
 import type { BotConfig, BotContext, Logger, MessageContext, QQAdapter, SessionStore, SessionState, SchedulerRef } from "./types.js";
 import { PluginSystem } from "../plugin/index.js";
-import { setCcPluginDirs } from "../ai/claude-code.js";
+import { setCcPluginDirs, setMcpServerNames } from "../ai/claude-code.js";
 import { createQqMcpServer } from "../mcp/qq-server.js";
 import { McpHost } from "../mcp/host.js";
 import { getScheduler, startScheduler } from "../scheduler/index.js";
@@ -170,8 +170,9 @@ export class Bot {
       mcpServers: [createQqMcpServer(this.adapter)],
     });
 
-    // 3. 将 CC 原生插件目录注入 Claude Code
+    // 3. 将插件提供的 Claude Code 能力注入 AI backend
     setCcPluginDirs(this.pluginSystem.getCcPluginDirs());
+    setMcpServerNames(this.pluginSystem.getAllMcpServers().map((item) => item.server.name));
 
     this.logger.info(`插件加载完成，${this.pluginSystem.list().length} 个插件已就绪`);
   }

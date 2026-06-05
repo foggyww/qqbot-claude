@@ -10,14 +10,20 @@ import type { AiBackend } from "../core/types.js";
 import { getProjectSessionId } from "../core/encode-path.js";
 
 // ---------------------------------------------------------------------------
-// Module-level CC plugin dirs (set by PluginSystem at init time)
+// Module-level Claude Code integration state (set by Bot.init)
 // ---------------------------------------------------------------------------
 
 let _ccPluginDirs: string[] = [];
+let _mcpServerNames: string[] = ["qqbot", "qqbot-steam"];
 
 /** Set CC native plugin directories for all subsequent AI calls */
 export function setCcPluginDirs(dirs: string[]): void {
   _ccPluginDirs = dirs;
+}
+
+/** Set MCP server names for all subsequent AI calls. */
+export function setMcpServerNames(names: string[]): void {
+  _mcpServerNames = normalizeMcpServerNames(names);
 }
 
 // ---------------------------------------------------------------------------
@@ -210,24 +216,29 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
   }
 }
 
-function writeMcpConfig(sessionDir: string): string {
+export function writeMcpConfig(sessionDir: string, serverNames = _mcpServerNames): string {
   const host = process.env.QQBOT_MCP_HOST ?? "127.0.0.1";
   const port = process.env.QQBOT_MCP_PORT ?? "8765";
   const filePath = path.resolve(sessionDir, ".qqbot-mcp.json");
+  const mcpServers: Record<string, { type: "http"; url: string }> = {};
+  for (const name of normalizeMcpServerNames(serverNames)) {
+    mcpServers[name] = {
+      type: "http",
+      url: `http://${host}:${port}/mcp/${encodeURIComponent(name)}`,
+    };
+  }
   const config = {
-    mcpServers: {
-      qqbot: {
-        type: "http",
-        url: `http://${host}:${port}/mcp/qqbot`,
-      },
-      "qqbot-steam": {
-        type: "http",
-        url: `http://${host}:${port}/mcp/qqbot-steam`,
-      },
-    },
+    mcpServers,
   };
   fs.writeFileSync(filePath, JSON.stringify(config, null, 2), "utf-8");
   return filePath;
+}
+
+function normalizeMcpServerNames(names: string[]): string[] {
+  return names
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0)
+    .filter((name, index, all) => all.indexOf(name) === index);
 }
 
 function normalizeAddDirs(dirs: string): string[] {

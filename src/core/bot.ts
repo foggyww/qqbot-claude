@@ -9,6 +9,7 @@ import { setCcPluginDirs } from "../ai/claude-code.js";
 import { createQqMcpServer } from "../mcp/qq-server.js";
 import { McpHost } from "../mcp/host.js";
 import { getScheduler, startScheduler } from "../scheduler/index.js";
+import { getProjectSessionId } from "./encode-path.js";
 
 // ---------------------------------------------------------------------------
 // Default logger
@@ -57,8 +58,6 @@ function isRootMode(sessionDir: string): boolean {
 }
 
 function createSessionStore(): SessionStore {
-  const encode = (p: string) => p.split("/").map(s => s.replace(/[^a-zA-Z0-9]/g, "-")).join("-");
-
   return {
     loadModel(dir: string) {
       const config = getConfig();
@@ -76,19 +75,21 @@ function createSessionStore(): SessionStore {
     },
     getSessionId(dir: string, projectsDir?: string): string | null {
       const config = getConfig();
-      const encoded = encode(dir);
       // Auto-detect root mode: if .run_as_root exists, use root's project dir
       const baseDir = projectsDir ?? (fs.existsSync(path.join(dir, ".run_as_root")) ? config.paths.rootProjectsDir : config.paths.projectsDir);
-      const projectDir = path.join(baseDir, encoded);
-      if (!fs.existsSync(projectDir)) return null;
-      const files = fs.readdirSync(projectDir).filter(f => f.endsWith(".jsonl"));
-      if (files.length === 0) return null;
-      const latest = files.reduce((a, b) =>
-        (fs.statSync(path.join(projectDir, a)).mtimeMs > fs.statSync(path.join(projectDir, b)).mtimeMs) ? a : b
-      );
-      return latest.replace(".jsonl", "");
+      return getProjectSessionId(dir, baseDir);
     },
   };
+}
+
+function extractNickname(info: unknown): string | null {
+  if (!info || typeof info !== "object") return null;
+  const obj = info as Record<string, unknown>;
+  const candidates = [obj.nickname, obj.nick, obj.card, obj.user_name];
+  for (const value of candidates) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +104,7 @@ export class Bot {
   readonly botCtx: BotContext;
   readonly sessionStore: SessionStore;
   readonly scheduler: SchedulerRef;
+  private botNick = "QQBot";
 
   private started = false;
   private mcpHost: McpHost | null = null;
@@ -152,9 +154,10 @@ export class Bot {
     this.botCtx.sessionDir = config.paths.sessionsDir;
 
     // 注入 session store 到路由器
-    setSessionStore(this.sessionStore);
+    this.botNick = config.qq.nickname?.trim() || "QQBot";
+    setSessionStore(this.sessionStore, this.botNick);
 
-    this.logger.info(`配置加载完成，QQ=${config.qq.account}`);
+    this.logger.info(`配置加载完成，QQ=${config.qq.account}，昵称=${this.botNick}`);
 
     // 2. 加载插件（插件注册命令）
     await this.pluginSystem.loadPlugins();
@@ -191,6 +194,8 @@ export class Bot {
     // 启动适配器
     await this.adapter.start();
 
+    await this.resolveBotNickAfterConnect();
+
     // 启动项目内 MCP Host，生命周期跟随 Bot
     this.mcpHost = new McpHost(
       this.pluginSystem.getAllMcpServers().map((item) => item.server),
@@ -226,6 +231,22 @@ export class Bot {
     }
 
     this.logger.info(`Scheduler 已启动，已扫描 ${restored} 个定时任务会话`);
+  }
+
+  private async resolveBotNickAfterConnect(): Promise<void> {
+    if (this.config.qq.nickname?.trim()) return;
+    try {
+      const info = await this.adapter.getStrangerInfo(this.config.qq.account);
+      const nickname = extractNickname(info);
+      if (nickname) {
+        this.botNick = nickname;
+        setSessionStore(this.sessionStore, this.botNick);
+        this.logger.info(`已从 OneBot 获取 Bot 昵称：${this.botNick}`);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`获取 Bot 昵称失败，继续使用 ${this.botNick}: ${msg}`);
+    }
   }
 
   async stop(): Promise<void> {
@@ -268,6 +289,7 @@ export class Bot {
   private async handleIncomingMessage(
     msgCtx: MessageContext,
   ): Promise<void> {
+    msgCtx.botNick = this.botNick;
     // 通知所有插件 onMessage（被动监听）
     await this.pluginSystem.onMessage(msgCtx);
 

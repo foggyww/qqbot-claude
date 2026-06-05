@@ -16,7 +16,7 @@ import type { Command, SessionStore } from "./types.js";
 // ---------------------------------------------------------------------------
 
 let _sessionStore: SessionStore | null = null;
-let _botNick = "foggymm";
+let _botNick = "QQBot";
 
 /** Set the session store for use by command handlers */
 export function setSessionStore(store: SessionStore, botNick?: string): void {

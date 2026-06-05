@@ -8,16 +8,11 @@ import * as path from "node:path";
 import type { Command, MessageContext } from "../../core/types.js";
 import type { Plugin } from "../../core/types.js";
 import { getConfig } from "../../core/config.js";
+import { encodeProjectPath } from "../../core/encode-path.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Encode a filesystem path into a Claude Code project directory name */
-function encodeProjectPath(p: string): string {
-  const parts = p.split("/");
-  return parts.map((s) => s.replace(/[^a-zA-Z0-9]/g, "-")).join("-");
-}
 
 function rmDirIfExists(dir: string): void {
   if (fs.existsSync(dir)) {

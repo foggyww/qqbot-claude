@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { getConfig } from "../core/config.js";
 import type { AiBackend } from "../core/types.js";
+import { getProjectSessionId } from "../core/encode-path.js";
 
 // ---------------------------------------------------------------------------
 // Module-level CC plugin dirs (set by PluginSystem at init time)
@@ -90,13 +91,16 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
     if (v) subprocessEnv[k] = v;
   }
 
-  // ---- Build command (root vs non-root) ----
-  // Mirroring Python logic:
-  //   root mode  → run `claude ...` directly as the current user (root)
-  //   chat mode  → run `sudo --preserve-env=... -u qqbot claude ...`
-  const runUser = process.env.RUN_USER ?? "qqbot";
-  const runUid = process.env.RUN_UID ? Number(process.env.RUN_UID) : 1000;
-  const runGid = process.env.RUN_GID ? Number(process.env.RUN_GID) : 1000;
+  // ---- Build command (root vs chat mode) ----
+  //   root mode            → run `claude ...` directly as the current user
+  //   chat + useSudo=true  → run `sudo --preserve-env=... -u <run.user> claude ...`
+  //   chat + useSudo=false → run `claude ...` directly as the current user
+  const runUser = process.env.RUN_USER ?? config.run.user ?? "qqbot";
+  const runUid = process.env.RUN_UID ? Number(process.env.RUN_UID) : config.run.uid;
+  const runGid = process.env.RUN_GID ? Number(process.env.RUN_GID) : config.run.gid;
+  const useSudo = process.env.RUN_USE_SUDO
+    ? ["1", "true", "yes", "on"].includes(process.env.RUN_USE_SUDO.toLowerCase())
+    : config.run.useSudo;
 
   let cmd: string;
   let args: string[];
@@ -105,12 +109,14 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
     // Root mode: claude runs as the current (root) user
     cmd = "claude";
     args = claudeArgs.slice(1); // drop leading "claude"
-  } else {
-    // Chat mode: chown the session dir and run via sudo as the target user
-    try {
-      fs.chownSync(opts.sessionDir, runUid, runGid);
-    } catch {
-      // Non-fatal — the uid/gid might not exist in test environments
+  } else if (useSudo) {
+    // Chat mode with privilege drop: chown the session dir and run via sudo as the target user
+    if (typeof runUid === "number" && typeof runGid === "number") {
+      try {
+        fs.chownSync(opts.sessionDir, runUid, runGid);
+      } catch {
+        // Non-fatal — the uid/gid might not exist in test environments
+      }
     }
 
     const envKeys = Object.keys(config.env).filter((k) => config.env[k]);
@@ -122,6 +128,9 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
       "-u", runUser,
       ...claudeArgs,
     ];
+  } else {
+    cmd = "claude";
+    args = claudeArgs.slice(1); // drop leading "claude"
   }
 
   // ---- Spawn ----
@@ -313,34 +322,7 @@ class ClaudeCodeRootBackend implements AiBackend {
  */
 export function getSessionId(sessionDir: string): string | null {
   const config = getConfig();
-  const projDir = config.paths.projectsDir;
-
-  // Encode path segments to a safe directory name
-  const encoded = sessionDir
-    .split(path.sep)
-    .map((s) => s.replace(/[^a-zA-Z0-9]/g, "-"))
-    .join("-");
-
-  const projectDir = path.join(projDir, encoded);
-  if (!fs.existsSync(projectDir)) return null;
-
-  let files: string[];
-  try {
-    files = fs.readdirSync(projectDir).filter((f) => f.endsWith(".jsonl"));
-  } catch {
-    return null;
-  }
-
-  if (files.length === 0) return null;
-
-  // Pick the most recently modified .jsonl file
-  const latest = files.reduce((a, b) => {
-    const aStat = fs.statSync(path.join(projectDir, a));
-    const bStat = fs.statSync(path.join(projectDir, b));
-    return aStat.mtimeMs > bStat.mtimeMs ? a : b;
-  });
-
-  return latest.replace(/\.jsonl$/, "");
+  return getProjectSessionId(sessionDir, config.paths.projectsDir);
 }
 
 // ---------------------------------------------------------------------------

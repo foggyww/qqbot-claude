@@ -64,7 +64,7 @@ export function buildCtx(
     rawEvent: event,
     sessionStore: opts?.sessionStore ?? createDummySessionStore(),
     botQq: event.self_id,
-    botNick: opts?.botNick ?? "foggymm",
+    botNick: opts?.botNick ?? "QQBot",
   };
 }
 

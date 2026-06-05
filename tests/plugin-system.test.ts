@@ -7,6 +7,7 @@ function mockCtx(): BotContext {
   return {
     config: {
       qq: { account: 1 },
+      onebot: { wsUrl: "ws://127.0.0.1:3000" },
       paths: {
         sessionsDir: "/tmp/sessions",
         projectsDir: "/tmp/projects",
@@ -15,6 +16,7 @@ function mockCtx(): BotContext {
         rootProjectsDir: "/tmp/root-projects",
       },
       env: {},
+      run: { user: "tester", useSudo: false },
       models: { default: "flash", flash: "flash" },
       efforts: { default: "high" },
       settings: { timeout: 1, noPermissionReply: "无权限" },

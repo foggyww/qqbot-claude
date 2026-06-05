@@ -15,6 +15,8 @@
     "build": "npm run clean && tsc && node scripts/copy-assets.mjs",
     "dev": "tsx src/core/index.ts",
     "lint": "eslint src/",
+    "setup": "node scripts/install.mjs",
+    "verify": "node scripts/install.mjs --check",
     "typecheck": "tsc --noEmit",
     "test": "vitest"
   },

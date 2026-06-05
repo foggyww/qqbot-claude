@@ -78,6 +78,17 @@ function safeNumber(value: unknown, fallback: number): number {
   return fallback;
 }
 
+function safeBoolean(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) return true;
+    if (["0", "false", "no", "off"].includes(normalized)) return false;
+  }
+  return fallback;
+}
+
 function requireEnv(key: string): string {
   return process.env[key] ?? "";
 }
@@ -122,6 +133,21 @@ export async function loadConfig(configPath?: string): Promise<BotConfig> {
   // 环境变量优先级高于配置文件
   const anToken = requireEnv("ANTHROPIC_AUTH_TOKEN");
   if (anToken) env.ANTHROPIC_AUTH_TOKEN = anToken;
+
+  // ---- run user ----
+  const runRaw = raw.run as Record<string, unknown> | undefined;
+  const defaultUseSudo = typeof process.getuid === "function" ? process.getuid() === 0 : false;
+  const runUserFromEnv = requireEnv("RUN_USER");
+  const runUidFromEnv = requireEnv("RUN_UID");
+  const runGidFromEnv = requireEnv("RUN_GID");
+  const runUseSudoFromEnv = requireEnv("RUN_USE_SUDO");
+  const configuredRunUser = safeString(runRaw?.user, "").trim();
+  const runUser = runUserFromEnv || configuredRunUser || (defaultUseSudo ? "qqbot" : os.userInfo().username);
+  const runUid = runUidFromEnv ? safeNumber(runUidFromEnv, 0) : safeNumber(runRaw?.uid, 0);
+  const runGid = runGidFromEnv ? safeNumber(runGidFromEnv, 0) : safeNumber(runRaw?.gid, 0);
+  const runUseSudo = runUseSudoFromEnv
+    ? safeBoolean(runUseSudoFromEnv, defaultUseSudo)
+    : safeBoolean(runRaw?.use_sudo ?? runRaw?.useSudo, defaultUseSudo);
 
   // ---- models ----
   const models = raw.models as Record<string, unknown> | undefined;
@@ -179,12 +205,22 @@ export async function loadConfig(configPath?: string): Promise<BotConfig> {
       platform: (raw.qq as Record<string, unknown> | undefined)?.platform as
         | string
         | undefined,
+      nickname: safeString((raw.qq as Record<string, unknown> | undefined)?.nickname, "") || undefined,
+    },
+    onebot: {
+      wsUrl: requireEnv("ONEBOT_WS_URL") || safeString((raw.onebot as Record<string, unknown> | undefined)?.ws_url, "ws://127.0.0.1:3000"),
     },
     paths: {
       sessionsDir, projectsDir, workspaceDir, projectDir,
       rootProjectsDir: paths?.root_projects_dir as string ?? path.join(os.homedir(), ".claude", "projects"),
     },
     env,
+    run: {
+      user: runUser || undefined,
+      uid: runUid > 0 ? runUid : undefined,
+      gid: runGid > 0 ? runGid : undefined,
+      useSudo: runUseSudo,
+    },
     models: modelsMerged,
     efforts: effortsMerged,
     settings: { timeout, noPermissionReply: settings?.["no_permission_reply"] as string ?? "无权限" },

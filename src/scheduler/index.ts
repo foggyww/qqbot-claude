@@ -8,6 +8,7 @@ import * as path from "node:path";
 import type { ScheduledTask, SchedulerRef } from "../core/types.js";
 import { askClaude } from "../ai/claude-code.js";
 import { getConfig } from "../core/config.js";
+import { getProjectSessionId } from "../core/encode-path.js";
 
 // ---------------------------------------------------------------------------
 // Logger
@@ -238,18 +239,7 @@ async function fireCronJob(sessionDir: string, triggerMsg: string): Promise<void
     const ef = path.join(sessionDir, ".effort");
     if (fs.existsSync(ef)) effort = fs.readFileSync(ef, "utf-8").trim();
 
-    const projDir = config.paths.projectsDir;
-    const encoded = sessionDir.split(path.sep).map((s) => s.replace(/[^a-zA-Z0-9]/g, "-")).join("-");
-    const projPath = path.join(projDir, encoded);
-    let sessionId: string | null = null;
-    if (fs.existsSync(projPath)) {
-      const files = fs.readdirSync(projPath).filter((f) => f.endsWith(".jsonl"));
-      if (files.length > 0) {
-        sessionId = files.reduce((a, b) =>
-          fs.statSync(path.join(projPath, a)).mtimeMs > fs.statSync(path.join(projPath, b)).mtimeMs ? a : b
-        ).replace(".jsonl", "");
-      }
-    }
+    const sessionId = getProjectSessionId(sessionDir, config.paths.projectsDir);
 
     const noAt = "触发定时任务。用 send_message 回复。需要艾特 QQ 用户时，message 必须使用 OneBot CQ 码 [CQ:at,qq=QQ号]，不要直接写 @QQ号。完成后只输出 ok。";
     const reply = await askClaude(fullMsg, sessionDir, sessionId, noAt, model, effort);

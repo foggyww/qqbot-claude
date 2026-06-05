@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { stripContent, type RawMessageEvent } from "../src/core/context.js";
+import { buildCtx, stripContent, type RawMessageEvent } from "../src/core/context.js";
 
 function groupEvent(rawMessage: string): RawMessageEvent {
   return {
@@ -26,5 +26,18 @@ describe("stripContent", () => {
     event.message_type = "private";
     event.raw_message = "  [CQ:image,file=1.jpg] hello  ";
     expect(stripContent(event)).toBe("[CQ:image,file=1.jpg] hello");
+  });
+});
+
+describe("buildCtx", () => {
+  it("uses explicit botNick when provided", () => {
+    const ctx = buildCtx(groupEvent("hello"), { botNick: "测试机器人" });
+    expect(ctx.botNick).toBe("测试机器人");
+    expect(ctx.botQq).toBe(123);
+    expect(ctx.sessionKey).toBe("group_789");
+  });
+
+  it("falls back to QQBot without a configured nick", () => {
+    expect(buildCtx(groupEvent("hello")).botNick).toBe("QQBot");
   });
 });

@@ -160,7 +160,8 @@ export interface SchedulerRef {
 // ==== 配置 ====
 
 export interface BotConfig {
-  qq: { account: number; platform?: string };
+  qq: { account: number; platform?: string; nickname?: string };
+  onebot: { wsUrl: string };
   paths: {
     sessionsDir: string;
     projectsDir: string;
@@ -169,6 +170,7 @@ export interface BotConfig {
     rootProjectsDir: string;
   };
   env: Record<string, string>;
+  run: { user?: string; uid?: number; gid?: number; useSudo: boolean };
   models: Record<string, string> & { default: string };
   efforts: { default: string };
   settings: { timeout: number; noPermissionReply: string };

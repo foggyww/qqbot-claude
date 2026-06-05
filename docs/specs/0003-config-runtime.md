@@ -37,6 +37,8 @@ Accepted
 - `.qqbotrc.toml` 缺失时应给出安装/setup 指引。
 - runtime 子目录缺失时应创建。
 - 配置解析错误必须明确报错。
+- `[qq].account` 必须是正整数；`[onebot].ws_url` 必须以 `ws://` 或 `wss://` 开头。
+- 非法 timeout、Steam watcher 间隔、角色等级等可疑配置应告警并使用安全默认值或跳过。
 
 ## Security
 
@@ -57,3 +59,4 @@ Accepted
 - [ ] 不存在旧 `data/` fallback。
 - [ ] `.env` 没有变成 qqbot 主配置。
 - [ ] Docker 和本机说明一致。
+- [ ] 配置错误能在启动早期给出明确报错或告警。

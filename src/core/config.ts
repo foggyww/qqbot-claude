@@ -90,6 +90,75 @@ function requireEnv(key: string): string {
   return process.env[key] ?? "";
 }
 
+const KNOWN_TOP_LEVEL_SECTIONS = new Set([
+  "qq",
+  "onebot",
+  "paths",
+  "env",
+  "run",
+  "models",
+  "efforts",
+  "settings",
+  "roles",
+  "group_whitelist",
+  "tools",
+  "prompt",
+  "steam_watcher",
+]);
+
+function warnConfig(message: string): void {
+  console.warn(`[config] ${message}`);
+}
+
+function validateTopLevelSections(raw: Record<string, unknown>): void {
+  for (const key of Object.keys(raw)) {
+    if (!KNOWN_TOP_LEVEL_SECTIONS.has(key)) {
+      warnConfig(`未知配置段 [${key}]，请检查是否拼写错误`);
+    }
+  }
+}
+
+function normalizePositiveNumber(value: unknown, fallback: number, label: string): number {
+  const n = safeNumber(value, fallback);
+  if (n <= 0) {
+    warnConfig(`${label} 必须为正数，使用默认值 ${fallback}`);
+    return fallback;
+  }
+  return n;
+}
+
+function normalizeNonNegativeNumber(value: unknown, fallback: number, label: string): number {
+  const n = safeNumber(value, fallback);
+  if (n < 0) {
+    warnConfig(`${label} 不能为负数，使用默认值 ${fallback}`);
+    return fallback;
+  }
+  return n;
+}
+
+function warnIfMissingOrPlaceholderAiKey(env: Record<string, string>): void {
+  const token = env.ANTHROPIC_AUTH_TOKEN || env.DEEPSEEK_API_KEY || "";
+  if (!token) {
+    warnConfig("未配置 ANTHROPIC_AUTH_TOKEN 或 DEEPSEEK_API_KEY，Claude Code 调用可能失败");
+    return;
+  }
+  if (token === "sk-xxxxxxxx" || token.toLowerCase().includes("placeholder")) {
+    warnConfig("AI API Key 看起来仍是占位符，请在 .qqbotrc.toml 的 [env] 中填入真实密钥");
+  }
+}
+
+function validateRequiredConfig(config: BotConfig): void {
+  if (!Number.isInteger(config.qq.account) || config.qq.account <= 0) {
+    throw new Error("配置错误: [qq].account 必须为正整数，请填写机器人 QQ 号");
+  }
+  if (!config.onebot.wsUrl) {
+    throw new Error("配置错误: [onebot].ws_url 未配置，请填写 OneBot WebSocket 地址或设置 ONEBOT_WS_URL");
+  }
+  if (!/^wss?:\/\//.test(config.onebot.wsUrl)) {
+    throw new Error("配置错误: [onebot].ws_url 必须以 ws:// 或 wss:// 开头");
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Config cache & loader
 // ---------------------------------------------------------------------------
@@ -111,6 +180,7 @@ export async function loadConfig(configPath?: string): Promise<BotConfig> {
   }
 
   const raw = result.config as Record<string, unknown>;
+  validateTopLevelSections(raw);
 
   // ---- paths ----
   const paths = raw.paths as Record<string, unknown> | undefined;
@@ -163,7 +233,7 @@ export async function loadConfig(configPath?: string): Promise<BotConfig> {
 
   // ---- settings ----
   const settings = raw.settings as Record<string, unknown> | undefined;
-  const timeout = safeNumber(settings?.timeout, 180);
+  const timeout = normalizePositiveNumber(settings?.timeout, 180, "[settings].timeout");
 
   // ---- roles (merged with auth.json) ----
   const roles: Record<number, RoleLevel> = {};
@@ -173,6 +243,8 @@ export async function loadConfig(configPath?: string): Promise<BotConfig> {
       const level = Number(v);
       if (level === 0 || level === 1 || level === 2 || level === 3) {
         roles[Number(k)] = level as RoleLevel;
+      } else {
+        warnConfig(`[roles].${k} 的等级 ${String(v)} 无效，已跳过；有效值为 0、1、2、3`);
       }
     }
   }
@@ -226,9 +298,12 @@ export async function loadConfig(configPath?: string): Promise<BotConfig> {
     tools,
     prompt: { masterQq: safeNumber((raw.prompt as Record<string, unknown> | undefined)?.master_qq as unknown, 0) },
     steamWatcher: {
-      intervalMinutes: safeNumber((raw.steam_watcher as Record<string, unknown> | undefined)?.interval_minutes as unknown, 5),
+      intervalMinutes: normalizeNonNegativeNumber((raw.steam_watcher as Record<string, unknown> | undefined)?.interval_minutes as unknown, 5, "[steam_watcher].interval_minutes"),
     },
   };
+
+  validateRequiredConfig(config);
+  warnIfMissingOrPlaceholderAiKey(config.env);
 
   _config = config;
   return config;

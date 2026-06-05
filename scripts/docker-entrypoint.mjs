@@ -55,7 +55,7 @@ function generateConfig() {
   const baseUrl = env("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic");
   const model = env("ANTHROPIC_MODEL", "deepseek-v4-pro");
   const flashModel = env("ANTHROPIC_DEFAULT_HAIKU_MODEL", "deepseek-v4-flash");
-  const wsUrl = env("ONEBOT_WS_URL", "ws://napcat:3000");
+  const wsUrl = env("ONEBOT_WS_URL", "ws://napcat:3001");
   const adminRole = adminQq ? `"${adminQq}" = 3` : "# \"123456789\" = 3";
 
   const content = `# QQBot Docker 配置文件
@@ -147,7 +147,12 @@ allowed = [
 interval_minutes = 5
 `;
 
-  fs.writeFileSync(configPath, content, { encoding: "utf-8", mode: 0o600 });
+  try {
+    fs.writeFileSync(configPath, content, { encoding: "utf-8", mode: 0o600 });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    fail(`无法写入 .qqbotrc.toml: ${msg}。如果你正在使用 Docker Compose，请移除 QQBOT_GENERATE_CONFIG=1，并在项目根目录直接维护 .qqbotrc.toml。`);
+  }
   log("已根据兼容环境变量生成 .qqbotrc.toml");
 }
 
@@ -163,9 +168,14 @@ ensureDirs();
 if (fs.existsSync(configPath) && fs.statSync(configPath).isFile() && env("QQBOT_GENERATE_CONFIG") !== "1") {
   log("检测到 .qqbotrc.toml，使用项目配置文件");
 } else if (env("QQBOT_GENERATE_CONFIG") === "1") {
+  if (fs.existsSync(configPath)) {
+    log("警告：QQBOT_GENERATE_CONFIG=1 将尝试覆写已有 .qqbotrc.toml；Docker Compose 默认只读挂载下会失败。推荐改为直接维护项目根目录 .qqbotrc.toml。");
+  } else {
+    log("QQBOT_GENERATE_CONFIG=1 仅作为兼容入口；推荐通过 setup 脚本或手动维护项目根目录 .qqbotrc.toml。");
+  }
   generateConfig();
 } else {
-  fail("未找到 .qqbotrc.toml。请先运行 `npm run setup`，或复制 .qqbotrc.toml.example 为 .qqbotrc.toml 后再启动 Docker。");
+  fail("未找到 .qqbotrc.toml。请先运行 `npm run setup`，或复制 .qqbotrc.toml.example 为 .qqbotrc.toml 后再启动 Docker。兼容模式可设置 QQBOT_GENERATE_CONFIG=1 并提供 BOT_QQ、ANTHROPIC_AUTH_TOKEN 等环境变量，但不推荐用于 Docker Compose。");
 }
 
 const [, , command = "node", ...args] = process.argv;

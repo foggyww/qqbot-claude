@@ -127,6 +127,8 @@ docker compose up -d --build
 
 Docker 运行时，qqbot 仍然读取项目根目录同一份 `.qqbotrc.toml`；配置文件会只读挂载到容器内 `/app/.qqbotrc.toml`。Compose 只会按需覆盖 `ONEBOT_WS_URL`，用于解决本机地址和 Docker service DNS 的差异。
 
+> `QQBOT_GENERATE_CONFIG=1` 是容器入口保留的兼容模式，只适合非标准 `docker run` 场景。推荐部署请使用 `./scripts/setup-docker.sh` 或手动维护项目根目录 `.qqbotrc.toml`；Docker Compose 默认把该文件只读挂载进容器，不推荐在容器内生成第二份配置。
+
 qqbot 自己的运行数据在容器项目目录内闭环，统一位于：
 
 - `qqbot_runtime` → `/app/runtime`

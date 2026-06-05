@@ -18,7 +18,7 @@ export class SteamPlugin implements Plugin {
   async onLoad(ctx: BotContext): Promise<void> {
     // 从 user_mapping 获取 API key
     const myInfo = getMyInfo() as Record<string, unknown>;
-    const apiKey = (process.env.STEAM_WEB_API_KEY ?? myInfo.steam_api_key ?? "") as string;
+    const apiKey = (process.env.STEAM_WEB_API_KEY ?? process.env.STEAM_API_KEY ?? myInfo.steam_api_key ?? "") as string;
     initWatcher(ctx, apiKey);
   }
 

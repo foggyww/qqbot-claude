@@ -115,9 +115,9 @@ describe("loadConfig", () => {
     expect(config.run.useSudo).toBe(true);
   });
 
-  it("merges data/auth.json roles over configured roles", async () => {
-    fs.mkdirSync(path.join(tempRoot, "data"));
-    fs.writeFileSync(path.join(tempRoot, "data", "auth.json"), JSON.stringify({ "1": 3, "2": 2 }));
+  it("merges runtime/data/auth.json roles over configured roles", async () => {
+    fs.mkdirSync(path.join(tempRoot, "runtime", "data"), { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, "runtime", "data", "auth.json"), JSON.stringify({ "1": 3, "2": 2 }));
 
     const config = await loadConfig(writeConfig(minimalConfig()));
 

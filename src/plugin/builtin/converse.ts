@@ -41,9 +41,7 @@ export async function handle(
 
   if (store.isRootMode(sessionDir)) {
     const sessionId = store.getSessionId(sessionDir);
-    const config = getConfig();
-    const addDirs = `${config.paths.projectDir} ${config.paths.workspaceDir}`;
-    return askClaudeRoot(msg, sessionDir, sessionId, undefined, model, effort, addDirs);
+    return askClaudeRoot(msg, sessionDir, sessionId, undefined, model, effort);
   }
 
   msg = `${ctx.senderNick || "未知"}（qq=${ctx.senderQq || 0}）说：${msg}`;

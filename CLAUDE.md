@@ -43,7 +43,7 @@ plugins/
     ├── commands.ts
     ├── mcp-server.ts
     └── watcher.ts
-data/                      # 运行时数据 (gitignored)
+runtime/                   # 运行时数据 (gitignored，本机/Docker 默认共用配置路径)
 prompts/                   # 提示词 .md 文件
 ```
 
@@ -85,7 +85,7 @@ interface Command {
 | 2 | 可信用户 | + /edit /model /think /schedule /steam /reset |
 | 3 | 管理员 | + /root /auth /add-command |
 
-角色配置在 `.qqbotrc.toml` 的 `[roles]` 段，`/auth` 命令可动态增删 (写入 `data/auth.json`)。
+角色配置在 `.qqbotrc.toml` 的 `[roles]` 段，`/auth` 命令可动态增删 (默认写入 `runtime/data/auth.json`)。
 
 ### 会话管理
 
@@ -94,12 +94,13 @@ interface Command {
 - 状态文件: `.model`, `.effort`, `.run_as_root`
 - Claude Code 会话存在 `{projectsDir}/{encoded_path}/*.jsonl`
 - Root 模式使用当前运行用户的 Claude Code projects 目录
+- Docker 和本机默认共用同一份 `.qqbotrc.toml`；默认路径统一为 `./runtime/...`
 
 ### AI 后端
 
-- Chat 模式: 根据 `[run].use_sudo` 选择直接 `claude ...` 或 `sudo --preserve-env=... -u <run-user> claude ...`
-- 运行用户默认策略: root 启动默认 `qqbot + sudo`；非 root 启动默认当前用户直接运行
-- Root 模式: `claude -p "msg" ...` (直接 root 执行)
+- Chat 模式: 默认当前进程用户直接运行 `claude ...`；`[run].use_sudo=true` 仅作为旧式宿主机降权运行兼容项
+- 运行用户默认策略: 推荐 Docker 部署，容器内以 `node` 用户直接运行；本机备用部署则以启动进程的当前用户直接运行
+- Root 模式: `claude -p "msg" ...` (仍为当前进程用户直接执行)
 - 环境变量从 `config.env` 和 `process.env` 合并
 
 ### MCP 架构
@@ -159,15 +160,17 @@ interface Plugin {
 ### 配置加载
 
 1. `cosmiconfig("qqbot")` 搜索 `.qqbotrc.toml`
-2. 合并 `data/auth.json` 动态授权
+2. 合并 `runtime/data/auth.json` 动态授权
 3. 环境变量覆盖 (`ANTHROPIC_AUTH_TOKEN`、`ONEBOT_WS_URL`、`RUN_*`)
-4. `npm run setup` 可交互生成 `.qqbotrc.toml`；`npm run verify` 可检查运行环境
+4. `npm run setup` / `npm run setup:docker` 可生成 Docker 部署配置；`npm run setup:local` 可生成本机部署配置；`npm run verify` 可检查本机运行环境
 
 ## 开发命令
 
 ```bash
 npm run dev        # tsx watch 模式
-npm run setup      # 快速生成 .qqbotrc.toml 并检查环境
+npm run setup      # Docker 推荐安装入口 (同 setup:docker)
+npm run setup:docker # 生成 .qqbotrc.toml + .env，不要求宿主机 Node 以外依赖
+npm run setup:local  # 本机备用部署安装向导
 npm run verify     # 检查 Node/Claude/OneBot/运行用户环境
 npm run build      # tsc 编译
 npm run typecheck  # 仅类型检查

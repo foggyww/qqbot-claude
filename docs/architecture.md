@@ -36,6 +36,9 @@ Bot
 - 开发：`npm run dev` → `tsx src/core/index.ts`
 - 构建：`npm run build` → `dist/src/core/index.js` / `dist/src/cli.js`
 - CLI：`qqbot` → `dist/src/cli.js`
+- Docker：`docker compose up -d --build` → `qqbot` 服务运行 `node dist/src/cli.js --config .qqbotrc.toml`，`napcat` 服务提供 OneBot WebSocket。
+
+路径闭环原则：Docker 和本机运行共用项目根目录同一份 `.qqbotrc.toml`。默认路径统一使用 `./runtime/...`；本机运行时落在宿主项目目录，Docker 运行时落在容器项目目录 `/app/runtime`，并由 Docker volume `qqbot_runtime` 持久化。Docker Compose 只会用环境变量覆盖 OneBot URL 这类网络拓扑差异，不生成第二份 qqbot 配置。NapCat 只作为 OneBot 依赖服务，其配置/登录态由 NapCat 自己的 volume 管理，不混入 qqbot runtime。
 
 生命周期：
 
@@ -44,7 +47,7 @@ loadConfig(.qqbotrc.toml) → new OneBotAdapter(config.onebot.wsUrl) → new Bot
   │
   ├─ init(configPath?)
   │   ├─ loadConfig(.qqbotrc.toml)（入口已预加载，init 会复用缓存）
-  │   ├─ 合并 data/auth.json 动态授权
+  │   ├─ 合并 runtime/data/auth.json 动态授权
   │   ├─ 将 config.env 注入主进程 process.env，供插件使用
   │   ├─ 创建 sessionsDir
   │   ├─ 注入 SessionStore 到 Router
@@ -96,7 +99,7 @@ Bot.handleIncomingMessage()
 `src/core/` 是框架核心：
 
 - `types.ts`：公共接口定义，包含 `BotConfig`、`QQAdapter`、`Command`、`Plugin`、`McpServer` 等。
-- `config.ts`：加载 `.qqbotrc.toml`，并合并 `data/auth.json` 动态授权。
+- `config.ts`：加载 `.qqbotrc.toml`，并合并 `runtime/data/auth.json` 动态授权。
 - `bot.ts`：生命周期编排者。
 - `context.ts`：原始 OneBot event → `MessageContext`。
 - `router.ts`：命令注册、命令解析、权限和群聊路由。
@@ -150,9 +153,9 @@ Bot.handleIncomingMessage()
 
 `src/ai/claude-code.ts` 封装 Claude Code CLI：
 
-- Chat 模式：根据 `[run].use_sudo` 决定直接运行 `claude ...` 或 `sudo -u <run-user> claude ...`。
-  - root 启动默认 `use_sudo=true`、`user=qqbot`。
-  - 非 root 启动默认 `use_sudo=false`、使用当前用户。
+- Chat 模式：默认用当前进程用户直接运行 `claude ...`；`[run].use_sudo=true` 仅作为旧式宿主机降权运行的高级兼容项。
+  - Docker 推荐部署中，当前用户为容器内 `node` 用户，不需要宿主机安装或启用 Claude Code。
+  - 本机备用部署中，当前用户为启动进程的用户。
 - Root 模式：当前用户直接运行 `claude ...`
 - 合并 `process.env` 与 `config.env`
 - 设置 `--permission-mode acceptEdits`
@@ -211,7 +214,7 @@ QQBOT_MCP_PORT=8765
 - `get_my_info`
 - `sleep`
 
-所有 QQ API 类工具都调用 `QQAdapter`；本地数据类工具读取 `data/user_mapping.json`。
+所有 QQ API 类工具都调用 `QQAdapter`；本地数据类工具读取 `runtime/data/user_mapping.json`。
 
 ### 5.2 插件 MCP server
 
@@ -226,22 +229,22 @@ plugins/steam/mcp-server.ts → createSteamMcpServer()
 ## 6. 配置与数据
 
 配置文件：`.qqbotrc.toml`，不提交。模板：`.qqbotrc.toml.example`。
-推荐用户通过 `npm run setup` 生成最小配置；`npm run verify` 可检查 Node.js、Claude CLI、OneBot WS 和运行用户环境。
+Docker 和本机运行都读取同一份 `.qqbotrc.toml`；Docker Compose 只额外使用 `.env` 给 NapCat/Compose 提供 `BOT_QQ`、`ONEBOT_WS_URL` 等编排变量。推荐 Docker 用户运行 `./scripts/setup-docker.sh` 或 `npm run setup:docker` 生成 `.qqbotrc.toml` + `.env`；本机备用部署通过 `npm run setup:local` 生成最小配置，`npm run verify` 检查 Node.js、Claude CLI、OneBot WS 和运行用户环境。高级用户可跳过脚本，直接编辑 `.qqbotrc.toml` 和 `.env`。
 
 配置加载顺序：
 
 1. `loadConfig(configPath?)`
 2. `cosmiconfig("qqbot")` 搜索 `.qqbotrc.toml`
 3. 解析 TOML 为 `BotConfig`
-4. 合并 `data/auth.json`
+4. 合并 `runtime/data/auth.json`
 5. 环境变量覆盖部分敏感项和运行参数，例如 `ANTHROPIC_AUTH_TOKEN`、`ONEBOT_WS_URL`、`RUN_USER`、`RUN_UID`、`RUN_GID`、`RUN_USE_SUDO`
 
 运行时数据：
 
-- `data/auth.json`：动态授权
-- `data/user_mapping.json`：QQ → Steam/GitHub 等第三方账号映射
-- `data/steam_state.json`：Steam watcher 状态
-- `data/steam_subscriptions.json`：Steam 群订阅状态
+- `runtime/data/auth.json`：动态授权
+- `runtime/data/user_mapping.json`：QQ → Steam/GitHub 等第三方账号映射
+- `runtime/data/steam_state.json`：Steam watcher 状态
+- `runtime/data/steam_subscriptions.json`：Steam 群订阅状态
 
 ## 7. 权限与会话
 
@@ -269,7 +272,7 @@ plugins/steam/mcp-server.ts → createSteamMcpServer()
 - MCP server 跟随 TS 项目启动停止。
 - QQ 操作必须通过 `QQAdapter`，避免多套 QQ 通道。
 - Prompt 文件每次读取磁盘，支持热更新。
-- `.qqbotrc.toml`、`data/`、`dist/`、`node_modules/` 不提交。
+- `.qqbotrc.toml`、`runtime/`、`data/`、`dist/`、`node_modules/` 不提交。
 
 ## 9. 当前已知改进点
 

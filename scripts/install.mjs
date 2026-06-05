@@ -38,31 +38,6 @@ function isRoot() {
   return typeof process.getuid === "function" && process.getuid() === 0;
 }
 
-function userExists(user) {
-  try {
-    run("id", [user]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function createQqbotUser() {
-  const candidates = [
-    ["useradd", ["--system", "--create-home", "--shell", "/usr/sbin/nologin", "qqbot"]],
-    ["useradd", ["-r", "-m", "-s", "/usr/sbin/nologin", "qqbot"]],
-  ];
-  for (const [cmd, cmdArgs] of candidates) {
-    try {
-      execFileSync(cmd, cmdArgs, { stdio: "inherit" });
-      return;
-    } catch {
-      // try next form
-    }
-  }
-  throw new Error("创建 qqbot 用户失败，请手动执行 useradd --system --create-home --shell /usr/sbin/nologin qqbot");
-}
-
 async function checkWebSocket(url) {
   if (typeof WebSocket === "undefined") {
     throw new Error("当前 Node.js 没有全局 WebSocket，请使用 Node.js 22+");
@@ -96,11 +71,12 @@ function tomlString(value) {
   return JSON.stringify(String(value));
 }
 
-function generateConfig({ qqAccount, apiKey, onebotWsUrl, adminQq }) {
+function generateConfig({ qqAccount, apiKey, onebotWsUrl, adminQq, groupWhitelist, steamApiKey }) {
   const adminRole = adminQq ? `"${Number(adminQq)}" = 3` : "# \"123456789\" = 3";
   const masterQq = adminQq ? Number(adminQq) : 0;
+  const groups = groupWhitelist ? groupWhitelist.split(",").map((x) => Number(x.trim())).filter((x) => Number.isFinite(x)).join(", ") : "";
   return `# QQBot 配置文件
-# 由 npm run setup 生成；需要高级配置时可参考 .qqbotrc.toml.example
+# 由 npm run setup:local 生成；需要高级配置时可参考 .qqbotrc.toml.example
 
 [qq]
 account = ${Number(qqAccount)}
@@ -111,10 +87,11 @@ nickname = ""
 ws_url = ${tomlString(onebotWsUrl)}
 
 [paths]
-sessions_dir = "./sessions"
-projects_dir = "./.claude/projects"
-workspace_dir = "./workspace"
+sessions_dir = "./runtime/sessions"
+projects_dir = "./runtime/.claude/projects"
+workspace_dir = "./runtime/workspace"
 project_dir = "."
+root_projects_dir = "./runtime/.claude/projects"
 
 [env]
 DEEPSEEK_API_KEY = ${tomlString(apiKey)}
@@ -128,6 +105,7 @@ CLAUDE_CODE_SUBAGENT_MODEL = "deepseek-v4-pro"
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1"
 CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK = "1"
 CLAUDE_CODE_EFFORT_LEVEL = "high"
+STEAM_WEB_API_KEY = ${tomlString(steamApiKey || "")}
 
 [models]
 default = "flash"
@@ -145,7 +123,7 @@ no_permission_reply = "无权限"
 ${adminRole}
 
 [group_whitelist]
-ids = []
+ids = [${groups}]
 
 [prompt]
 master_qq = ${masterQq}
@@ -200,7 +178,14 @@ async function askSetupQuestions() {
     const adminQq = (await rl.question("管理员 QQ 号（可选，回车跳过）: ")).trim();
     if (adminQq && !/^\d+$/.test(adminQq)) throw new Error("管理员 QQ 号必须是数字，或留空");
 
-    return { qqAccount, apiKey, onebotWsUrl, adminQq };
+    const groupWhitelist = (await rl.question("群白名单，多个群号用英文逗号分隔（可选）: ")).trim();
+    if (groupWhitelist && !/^\d+(\s*,\s*\d+)*$/.test(groupWhitelist)) {
+      throw new Error("群白名单格式错误，应为：123,456");
+    }
+
+    const steamApiKey = (await rl.question("Steam Web API Key（可选，回车跳过）: ")).trim();
+
+    return { qqAccount, apiKey, onebotWsUrl, adminQq, groupWhitelist, steamApiKey };
   } finally {
     rl.close();
   }
@@ -216,11 +201,11 @@ function readWsUrlFromConfig() {
 async function createConfigIfNeeded() {
   if (checkOnly) return;
   if (fs.existsSync(CONFIG_FILE) && !force) {
-    log("已存在 .qqbotrc.toml，跳过生成配置。需要覆盖请运行：npm run setup -- --force");
+    log("已存在 .qqbotrc.toml，跳过生成配置。需要覆盖请运行：npm run setup:local -- --force");
     return;
   }
 
-  console.log("\nQQBot 快速配置（2 项必填，2 项可选）");
+  console.log("\nQQBot 本机一键配置（2 项必填，4 项可选）");
   console.log("--------------------------------");
   const answers = await askSetupQuestions();
   fs.writeFileSync(CONFIG_FILE, generateConfig(answers), { encoding: "utf-8", mode: 0o600 });
@@ -244,35 +229,25 @@ async function checkPrerequisites(wsUrl) {
 }
 
 function prepareRunUser() {
+  ensureDir(path.join(process.cwd(), "runtime", "data"));
+  ensureDir(path.join(process.cwd(), "runtime", "sessions"));
+  ensureDir(path.join(process.cwd(), "runtime", ".claude", "projects"));
+  ensureDir(path.join(process.cwd(), "runtime", "workspace"));
+  log(`将使用当前用户运行 Claude：${os.userInfo().username}`);
   if (isRoot()) {
-    if (!userExists("qqbot")) {
-      if (checkOnly) {
-        fail("当前为 root，但 qqbot 用户不存在；请运行 npm run setup 创建，或手动创建");
-      } else {
-        log("qqbot 用户不存在，正在创建");
-        createQqbotUser();
-      }
-    }
-    ensureDir(path.join(process.cwd(), "sessions"), "qqbot:qqbot");
-    ensureDir(path.join(process.cwd(), ".claude", "projects"), "qqbot:qqbot");
-    ensureDir(path.join(process.cwd(), "workspace"), "qqbot:qqbot");
-  } else {
-    ensureDir(path.join(process.cwd(), "sessions"));
-    ensureDir(path.join(process.cwd(), ".claude", "projects"));
-    ensureDir(path.join(process.cwd(), "workspace"));
-    log(`将使用当前用户运行 Claude：${os.userInfo().username}`);
+    log("提示：检测到当前为 root。推荐使用 Docker 部署；本机 root 运行时 Claude Code 也会默认以当前 root 用户直接运行。");
   }
 }
 
 async function main() {
-  log(checkOnly ? "开始验证运行环境" : "开始安装向导");
+  log(checkOnly ? "开始验证本机运行环境" : "开始本机安装向导");
   await createConfigIfNeeded();
   const wsUrl = readWsUrlFromConfig();
   await checkPrerequisites(wsUrl);
   prepareRunUser();
 
   if (process.exitCode) process.exit(process.exitCode);
-  log(checkOnly ? "验证完成" : "安装完成。下一步运行：npm run dev");
+  log(checkOnly ? "验证完成" : "本机安装完成。下一步运行：npm run dev");
 }
 
 main().catch((err) => {

@@ -6,7 +6,7 @@ const BASE = "https://api.steampowered.com";
 const STORE = "https://store.steampowered.com/api/storesearch";
 
 function apiKey(): string {
-  return process.env.STEAM_WEB_API_KEY ?? "";
+  return process.env.STEAM_WEB_API_KEY ?? process.env.STEAM_API_KEY ?? "";
 }
 
 async function fetchSteam(path: string): Promise<unknown> {

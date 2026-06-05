@@ -1,0 +1,14 @@
+node_modules/
+dist/
+data/
+data.migrated-*/
+runtime/
+sessions/
+workspace/
+.claude/
+.env
+.qqbotrc.toml
+coverage/
+*.log
+.git/
+.DS_Store

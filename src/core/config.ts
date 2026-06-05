@@ -28,14 +28,11 @@ const explorer = cosmiconfig("qqbot", {
 // ---------------------------------------------------------------------------
 
 export function findDataDir(): string {
-  const candidates = [
-    path.join(process.cwd(), "data"),
-  ];
-  for (const dir of candidates) {
-    if (fs.existsSync(dir)) return dir;
+  const dir = path.join(process.cwd(), "runtime", "data");
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
   }
-  // fallback: create relative to cwd
-  return path.join(process.cwd(), "data");
+  return dir;
 }
 
 function loadAuthFile(dataDir: string): Record<number, RoleLevel> {
@@ -117,9 +114,9 @@ export async function loadConfig(configPath?: string): Promise<BotConfig> {
 
   // ---- paths ----
   const paths = raw.paths as Record<string, unknown> | undefined;
-  const sessionsDir = safeString(paths?.sessions_dir, path.join(process.cwd(), "sessions"));
-  const projectsDir = safeString(paths?.projects_dir, path.join(os.homedir(), ".claude", "projects"));
-  const workspaceDir = safeString(paths?.workspace_dir, process.cwd());
+  const sessionsDir = safeString(paths?.sessions_dir, path.join(process.cwd(), "runtime", "sessions"));
+  const projectsDir = safeString(paths?.projects_dir, path.join(process.cwd(), "runtime", ".claude", "projects"));
+  const workspaceDir = safeString(paths?.workspace_dir, path.join(process.cwd(), "runtime", "workspace"));
   const projectDir = safeString(paths?.project_dir, process.cwd());
 
   // ---- env ----
@@ -136,13 +133,13 @@ export async function loadConfig(configPath?: string): Promise<BotConfig> {
 
   // ---- run user ----
   const runRaw = raw.run as Record<string, unknown> | undefined;
-  const defaultUseSudo = typeof process.getuid === "function" ? process.getuid() === 0 : false;
+  const defaultUseSudo = false;
   const runUserFromEnv = requireEnv("RUN_USER");
   const runUidFromEnv = requireEnv("RUN_UID");
   const runGidFromEnv = requireEnv("RUN_GID");
   const runUseSudoFromEnv = requireEnv("RUN_USE_SUDO");
   const configuredRunUser = safeString(runRaw?.user, "").trim();
-  const runUser = runUserFromEnv || configuredRunUser || (defaultUseSudo ? "qqbot" : os.userInfo().username);
+  const runUser = runUserFromEnv || configuredRunUser || os.userInfo().username;
   const runUid = runUidFromEnv ? safeNumber(runUidFromEnv, 0) : safeNumber(runRaw?.uid, 0);
   const runGid = runGidFromEnv ? safeNumber(runGidFromEnv, 0) : safeNumber(runRaw?.gid, 0);
   const runUseSudo = runUseSudoFromEnv
@@ -212,7 +209,7 @@ export async function loadConfig(configPath?: string): Promise<BotConfig> {
     },
     paths: {
       sessionsDir, projectsDir, workspaceDir, projectDir,
-      rootProjectsDir: paths?.root_projects_dir as string ?? path.join(os.homedir(), ".claude", "projects"),
+      rootProjectsDir: paths?.root_projects_dir as string ?? path.join(process.cwd(), "runtime", ".claude", "projects"),
     },
     env,
     run: {

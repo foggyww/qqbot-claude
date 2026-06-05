@@ -1,8 +1,14 @@
 node_modules/
 dist/
 data/
+data.migrated-*/
+runtime/
+sessions/
+workspace/
+.claude/
 .env
 .qqbotrc.toml
+docker-compose.override.yml
 *.log
 coverage/
 .DS_Store

@@ -3,6 +3,7 @@
 
 import * as child_process from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { getConfig } from "../core/config.js";
 import type { AiBackend } from "../core/types.js";
@@ -42,14 +43,15 @@ interface RunClaudeOptions {
 async function _runClaude(opts: RunClaudeOptions): Promise<string> {
   const config = getConfig();
   const model = opts.model ?? config.models[config.models.default] ?? config.models.flash;
+  const sessionDir = path.resolve(opts.sessionDir);
 
   // Ensure session directory exists
-  fs.mkdirSync(opts.sessionDir, { recursive: true });
+  fs.mkdirSync(sessionDir, { recursive: true });
 
-  const mcpConfigPath = writeMcpConfig(opts.sessionDir);
+  const mcpConfigPath = writeMcpConfig(sessionDir);
 
   // ---- Build arguments ----
-  const dirs = opts.addDirs || config.paths.workspaceDir;
+  const dirs = normalizeAddDirs(opts.addDirs || config.paths.workspaceDir);
   const allowedTools = config.tools.length > 0
     ? config.tools.join(",")
     : "Read,Bash,Edit,Write";
@@ -60,8 +62,10 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
     "--permission-mode", "acceptEdits",
     "--allowedTools", allowedTools,
     "--mcp-config", mcpConfigPath,
-    "--add-dir", dirs,
   ];
+  for (const dir of dirs) {
+    claudeArgs.push("--add-dir", dir);
+  }
 
   if (opts.systemPrompt) {
     claudeArgs.push("--append-system-prompt", opts.systemPrompt);
@@ -90,12 +94,15 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
   for (const [k, v] of Object.entries(config.env)) {
     if (v) subprocessEnv[k] = v;
   }
+  if (!subprocessEnv.CLAUDE_CONFIG_DIR) {
+    subprocessEnv.CLAUDE_CONFIG_DIR = path.resolve(path.dirname(config.paths.projectsDir));
+  }
 
   // ---- Build command (root vs chat mode) ----
   //   root mode            → run `claude ...` directly as the current user
   //   chat + useSudo=true  → run `sudo --preserve-env=... -u <run.user> claude ...`
   //   chat + useSudo=false → run `claude ...` directly as the current user
-  const runUser = process.env.RUN_USER ?? config.run.user ?? "qqbot";
+  const runUser = process.env.RUN_USER ?? config.run.user ?? os.userInfo().username;
   const runUid = process.env.RUN_UID ? Number(process.env.RUN_UID) : config.run.uid;
   const runGid = process.env.RUN_GID ? Number(process.env.RUN_GID) : config.run.gid;
   const useSudo = process.env.RUN_USE_SUDO
@@ -113,7 +120,7 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
     // Chat mode with privilege drop: chown the session dir and run via sudo as the target user
     if (typeof runUid === "number" && typeof runGid === "number") {
       try {
-        fs.chownSync(opts.sessionDir, runUid, runGid);
+        fs.chownSync(sessionDir, runUid, runGid);
       } catch {
         // Non-fatal — the uid/gid might not exist in test environments
       }
@@ -135,7 +142,7 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
 
   // ---- Spawn ----
   const proc = child_process.spawn(cmd, args, {
-    cwd: opts.sessionDir,
+    cwd: sessionDir,
     env: subprocessEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -206,7 +213,7 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
 function writeMcpConfig(sessionDir: string): string {
   const host = process.env.QQBOT_MCP_HOST ?? "127.0.0.1";
   const port = process.env.QQBOT_MCP_PORT ?? "8765";
-  const filePath = path.join(sessionDir, ".qqbot-mcp.json");
+  const filePath = path.resolve(sessionDir, ".qqbot-mcp.json");
   const config = {
     mcpServers: {
       qqbot: {
@@ -221,6 +228,15 @@ function writeMcpConfig(sessionDir: string): string {
   };
   fs.writeFileSync(filePath, JSON.stringify(config, null, 2), "utf-8");
   return filePath;
+}
+
+function normalizeAddDirs(dirs: string): string[] {
+  return dirs
+    .split(/[\s,]+/)
+    .map((dir) => dir.trim())
+    .filter((dir) => dir.length > 0)
+    .map((dir) => path.resolve(dir))
+    .filter((dir, index, all) => all.indexOf(dir) === index);
 }
 
 // ---------------------------------------------------------------------------
@@ -242,8 +258,11 @@ class TimeoutError extends Error {
 /**
  * Normal (chat) mode backend.
  *
- * Runs claude via `sudo -u qqbot` with only the workspace directory
- * accessible (--add-dir).  Used for routine Q&A and safe operations.
+ * Runs claude as the current process user with only the workspace directory
+ * accessible (--add-dir). Used for routine Q&A and safe operations.
+ *
+ * `use_sudo=true` is kept only as an advanced host-deployment compatibility
+ * option; Docker deployment runs as the container's `node` user directly.
  */
 class ClaudeCodeBackend implements AiBackend {
   async ask(
@@ -292,8 +311,8 @@ class ClaudeCodeRootBackend implements AiBackend {
     const config = getConfig();
     // Root mode always includes both project and workspace dirs
     const dirs = addDirs
-      ? `${config.paths.projectDir} ${config.paths.workspaceDir} ${addDirs}`
-      : `${config.paths.projectDir} ${config.paths.workspaceDir}`;
+      ? `${config.paths.projectDir},${config.paths.workspaceDir},${addDirs}`
+      : `${config.paths.projectDir},${config.paths.workspaceDir}`;
 
     return _runClaude({
       msg,

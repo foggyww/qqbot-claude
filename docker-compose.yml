@@ -1,0 +1,38 @@
+services:
+  qqbot:
+    build: .
+    container_name: qqbot
+    restart: unless-stopped
+    environment:
+      HOME: /app/runtime
+      # Keep .qqbotrc.toml shared with local runs while adapting the OneBot URL
+      # to Docker's service DNS. Override in .env only when using an external
+      # OneBot/NapCat service.
+      ONEBOT_WS_URL: ${ONEBOT_WS_URL:-ws://napcat:3001}
+    volumes:
+      - type: bind
+        source: ./.qqbotrc.toml
+        target: /app/.qqbotrc.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      - qqbot_runtime:/app/runtime
+
+  napcat:
+    image: mlikiowa/napcat-docker:latest
+    container_name: napcat
+    restart: unless-stopped
+    environment:
+      ACCOUNT: ${BOT_QQ}
+      MODE: ${NAPCAT_MODE:-ws}
+    ports:
+      - "3001:3001"
+      - "6099:6099"
+    volumes:
+      - napcat_config:/app/napcat/config
+      - napcat_qq_config:/app/.config/QQ
+
+volumes:
+  qqbot_runtime:
+  napcat_config:
+  napcat_qq_config:

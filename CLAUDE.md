@@ -97,7 +97,8 @@ interface Command {
 
 ### AI 后端
 
-- Chat 模式: `sudo --preserve-env=... -u <run-user> claude -p "msg" --permission-mode acceptEdits --allowedTools ... --resume <id>`
+- Chat 模式: 根据 `[run].use_sudo` 选择直接 `claude ...` 或 `sudo --preserve-env=... -u <run-user> claude ...`
+- 运行用户默认策略: root 启动默认 `qqbot + sudo`；非 root 启动默认当前用户直接运行
 - Root 模式: `claude -p "msg" ...` (直接 root 执行)
 - 环境变量从 `config.env` 和 `process.env` 合并
 
@@ -159,12 +160,15 @@ interface Plugin {
 
 1. `cosmiconfig("qqbot")` 搜索 `.qqbotrc.toml`
 2. 合并 `data/auth.json` 动态授权
-3. 环境变量覆盖 (`ANTHROPIC_AUTH_TOKEN`)
+3. 环境变量覆盖 (`ANTHROPIC_AUTH_TOKEN`、`ONEBOT_WS_URL`、`RUN_*`)
+4. `npm run setup` 可交互生成 `.qqbotrc.toml`；`npm run verify` 可检查运行环境
 
 ## 开发命令
 
 ```bash
 npm run dev        # tsx watch 模式
+npm run setup      # 快速生成 .qqbotrc.toml 并检查环境
+npm run verify     # 检查 Node/Claude/OneBot/运行用户环境
 npm run build      # tsc 编译
 npm run typecheck  # 仅类型检查
 npm run lint       # eslint

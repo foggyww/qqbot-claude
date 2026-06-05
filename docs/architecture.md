@@ -40,10 +40,10 @@ Bot
 生命周期：
 
 ```text
-new Bot(new OneBotAdapter())
+loadConfig(.qqbotrc.toml) → new OneBotAdapter(config.onebot.wsUrl) → new Bot(adapter)
   │
   ├─ init(configPath?)
-  │   ├─ loadConfig(.qqbotrc.toml)
+  │   ├─ loadConfig(.qqbotrc.toml)（入口已预加载，init 会复用缓存）
   │   ├─ 合并 data/auth.json 动态授权
   │   ├─ 将 config.env 注入主进程 process.env，供插件使用
   │   ├─ 创建 sessionsDir
@@ -54,7 +54,7 @@ new Bot(new OneBotAdapter())
   │
   ├─ start()
   │   ├─ adapter.onMessage(Bot.handleIncomingMessage)
-  │   ├─ adapter.start()       连接 OneBot WebSocket
+  │   ├─ adapter.start()       连接配置中的 OneBot WebSocket
   │   └─ McpHost.start()       启动项目内 MCP HTTP JSON-RPC Host
   │
   └─ stop()
@@ -107,7 +107,8 @@ Bot.handleIncomingMessage()
 
 `src/adapter/onebot.ts` 实现 `QQAdapter`：
 
-- 连接 `ws://127.0.0.1:3000`，可用 `ONEBOT_WS_URL` 覆盖。
+- 连接 `.qqbotrc.toml` 的 `[onebot].ws_url`，默认 `ws://127.0.0.1:3000`。
+- 可用环境变量 `ONEBOT_WS_URL` 临时覆盖配置。
 - 通过 OneBot reverse WebSocket 发送 `{ action, params, echo }`。
 - 使用 echo 匹配 API 响应。
 - 支持超时、断线 pending call 拒绝、指数退避重连。
@@ -149,7 +150,9 @@ Bot.handleIncomingMessage()
 
 `src/ai/claude-code.ts` 封装 Claude Code CLI：
 
-- Chat 模式：默认用 `sudo -u <run-user> claude ...`（可通过环境变量配置运行用户）
+- Chat 模式：根据 `[run].use_sudo` 决定直接运行 `claude ...` 或 `sudo -u <run-user> claude ...`。
+  - root 启动默认 `use_sudo=true`、`user=qqbot`。
+  - 非 root 启动默认 `use_sudo=false`、使用当前用户。
 - Root 模式：当前用户直接运行 `claude ...`
 - 合并 `process.env` 与 `config.env`
 - 设置 `--permission-mode acceptEdits`
@@ -223,6 +226,7 @@ plugins/steam/mcp-server.ts → createSteamMcpServer()
 ## 6. 配置与数据
 
 配置文件：`.qqbotrc.toml`，不提交。模板：`.qqbotrc.toml.example`。
+推荐用户通过 `npm run setup` 生成最小配置；`npm run verify` 可检查 Node.js、Claude CLI、OneBot WS 和运行用户环境。
 
 配置加载顺序：
 
@@ -230,7 +234,7 @@ plugins/steam/mcp-server.ts → createSteamMcpServer()
 2. `cosmiconfig("qqbot")` 搜索 `.qqbotrc.toml`
 3. 解析 TOML 为 `BotConfig`
 4. 合并 `data/auth.json`
-5. 环境变量覆盖部分敏感项，例如 `ANTHROPIC_AUTH_TOKEN`
+5. 环境变量覆盖部分敏感项和运行参数，例如 `ANTHROPIC_AUTH_TOKEN`、`ONEBOT_WS_URL`、`RUN_USER`、`RUN_UID`、`RUN_GID`、`RUN_USE_SUDO`
 
 运行时数据：
 

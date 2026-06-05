@@ -65,22 +65,34 @@ cd qqbot-claude
 npm install
 ```
 
-### 2. 创建配置
+### 2. 快速配置
+
+```bash
+npm run setup
+```
+
+安装向导会询问 2 个必填项、2 个可选项：
+
+```text
+Bot QQ 号:                                      # 必填
+DeepSeek / Anthropic API Key:                   # 必填
+OneBot WebSocket 地址 (ws://127.0.0.1:3000):     # 可选，回车用默认
+管理员 QQ 号（可选，回车跳过）:                    # 可选
+```
+
+如果 `.qqbotrc.toml` 已存在，`npm run setup` 默认不会覆盖。需要重新生成时使用：
+
+```bash
+npm run setup -- --force
+```
+
+`.qqbotrc.toml` 包含账号、群号和密钥，已被 `.gitignore` 忽略，不要提交。
+
+也可以手动复制模板配置：
 
 ```bash
 cp .qqbotrc.toml.example .qqbotrc.toml
 ```
-
-编辑 `.qqbotrc.toml`，至少需要配置：
-
-- `[qq].account`：bot 的 QQ 号
-- `[env].DEEPSEEK_API_KEY` / `[env].ANTHROPIC_AUTH_TOKEN`：模型 API key
-- `[env].ANTHROPIC_BASE_URL`：DeepSeek Anthropic-compatible endpoint
-- `[roles]`：管理员或可信用户 QQ 号
-- `[group_whitelist].ids`：允许 bot 响应的群号
-- `[prompt].master_qq`：提示词中用于识别主人的 QQ 号
-
-`.qqbotrc.toml` 包含账号、群号和密钥，已被 `.gitignore` 忽略，不要提交。
 
 ### 3. 配置 NapCat / OneBot
 
@@ -90,7 +102,24 @@ cp .qqbotrc.toml.example .qqbotrc.toml
 ws://127.0.0.1:3000
 ```
 
-如果需要修改地址，可以在代码或后续配置扩展中调整 OneBot adapter 的连接参数。
+如果需要修改地址，可以在 `.qqbotrc.toml` 中配置：
+
+```toml
+[onebot]
+ws_url = "ws://127.0.0.1:3000"
+```
+
+也可以用环境变量临时覆盖：
+
+```bash
+ONEBOT_WS_URL=ws://127.0.0.1:3001 npm run dev
+```
+
+验证本机环境和 OneBot 连接：
+
+```bash
+npm run verify
+```
 
 ### 4. 构建并运行
 
@@ -119,6 +148,10 @@ node dist/src/cli.js
 [qq]
 account = 0
 platform = "napcat"
+nickname = ""
+
+[onebot]
+ws_url = "ws://127.0.0.1:3000"
 
 [env]
 ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic"
@@ -134,6 +167,8 @@ ids = []
 [prompt]
 master_qq = 0
 ```
+
+运行用户通常不需要配置：root 启动时会自动用 `qqbot` 用户运行普通对话，非 root 启动时会自动用当前用户运行普通对话。只有需要覆盖默认行为时，才在 `.qqbotrc.toml` 中增加 `[run]` 段。
 
 角色等级：
 

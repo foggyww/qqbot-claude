@@ -10,9 +10,25 @@ function apiKey(): string {
 }
 
 async function fetchSteam(path: string): Promise<unknown> {
-  const url = `${BASE}${path}&key=${apiKey()}`;
+  const key = apiKey();
+  if (!key) return { error: "未配置 STEAM_WEB_API_KEY，请在 .qqbotrc.toml 的 [env] 中设置" };
+  const sep = path.includes("?") ? "&" : "?";
+  const url = `${BASE}${path}${sep}key=${encodeURIComponent(key)}`;
   const r = await fetch(url, { headers: { "User-Agent": "qqbot/1.0" } });
-  return r.json();
+  const text = await r.text();
+  const contentType = r.headers.get("content-type") ?? "";
+  if (!r.ok) {
+    return { error: `Steam API HTTP ${r.status}`, contentType, body: text.slice(0, 300) };
+  }
+  if (!contentType.includes("application/json")) {
+    return { error: "Steam API 返回非 JSON 内容", contentType, body: text.slice(0, 300) };
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { error: `Steam API JSON 解析失败: ${msg}`, contentType, body: text.slice(0, 300) };
+  }
 }
 
 function resolveSteamId(args: Record<string, unknown>): string {
@@ -59,11 +75,21 @@ export function createSteamMcpServer(): McpServer {
           if (ids.length === 0) return { error: "未找到 Steam ID" };
           return fetchSteam(`/ISteamUser/GetPlayerSummaries/v2/?steamids=${ids.join(",")}`);
         }
-        case "steam_get_friend_list": return fetchSteam(`/ISteamUser/GetFriendList/v1/?steamid=${sid}`);
-        case "steam_get_owned_games": return fetchSteam(`/IPlayerService/GetOwnedGames/v1/?steamid=${sid}&include_appinfo=true`);
-        case "steam_get_recently_played_games": return fetchSteam(`/IPlayerService/GetRecentlyPlayedGames/v1/?steamid=${sid}&count=${args.count ?? 10}`);
-        case "steam_get_user_stats_for_game": return fetchSteam(`/ISteamUserStats/GetUserStatsForGame/v2/?steamid=${sid}&appid=${args.app_id}`);
-        case "steam_get_player_achievements": return fetchSteam(`/ISteamUserStats/GetPlayerAchievements/v1/?steamid=${sid}&appid=${args.app_id}`);
+        case "steam_get_friend_list":
+          if (!sid) return { error: "未找到 Steam ID" };
+          return fetchSteam(`/ISteamUser/GetFriendList/v1/?steamid=${encodeURIComponent(sid)}`);
+        case "steam_get_owned_games":
+          if (!sid) return { error: "未找到 Steam ID" };
+          return fetchSteam(`/IPlayerService/GetOwnedGames/v1/?steamid=${encodeURIComponent(sid)}&include_appinfo=true`);
+        case "steam_get_recently_played_games":
+          if (!sid) return { error: "未找到 Steam ID" };
+          return fetchSteam(`/IPlayerService/GetRecentlyPlayedGames/v1/?steamid=${encodeURIComponent(sid)}&count=${args.count ?? 10}`);
+        case "steam_get_user_stats_for_game":
+          if (!sid) return { error: "未找到 Steam ID" };
+          return fetchSteam(`/ISteamUserStats/GetUserStatsForGame/v2/?steamid=${encodeURIComponent(sid)}&appid=${args.app_id}`);
+        case "steam_get_player_achievements":
+          if (!sid) return { error: "未找到 Steam ID" };
+          return fetchSteam(`/ISteamUserStats/GetPlayerAchievements/v1/?steamid=${encodeURIComponent(sid)}&appid=${args.app_id}`);
         case "steam_get_global_achievement_percentages": return fetchSteam(`/ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2/?gameid=${args.app_id}`);
         case "steam_search_games": {
           const r = await fetch(`${STORE}/?term=${encodeURIComponent(String(args.search))}&l=zh`);

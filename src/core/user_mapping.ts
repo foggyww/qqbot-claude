@@ -10,7 +10,7 @@ export function setMappingFile(filePath: string): void {
 
 function getFile(): string {
   if (_file) return _file;
-  return path.join(process.cwd(), "data", "user_mapping.json");
+  return path.join(process.cwd(), "runtime", "data", "user_mapping.json");
 }
 
 function load(): Record<string, Record<string, unknown>> {

@@ -1,11 +1,17 @@
 /** Steam 状态监控 —— 定时轮询 + 变更推送 */
 import * as fs from "node:fs";
-import * as path from "node:path";
 import type { BotContext } from "../../src/core/types.js";
 import { getUserMapping } from "../../src/core/user_mapping.js";
+import {
+  fetchSteam,
+  isSteamApiError,
+  STEAM_STATE_FILE,
+  STEAM_SUBS_FILE,
+  steamIdsFromMapping,
+} from "./shared.js";
 
-const STATE_FILE = path.join(process.cwd(), "data", "steam_state.json");
-const SUBS_FILE = path.join(process.cwd(), "data", "steam_subscriptions.json");
+const STATE_FILE = STEAM_STATE_FILE;
+const SUBS_FILE = STEAM_SUBS_FILE;
 
 let _ctx: BotContext | null = null;
 let _apiKey = "";
@@ -72,20 +78,22 @@ async function doTick(): Promise<void> {
       const sids: string[] = [];
       for (const member of members) {
         const mapping = getUserMapping(member.qq);
-        const steamIds = mapping.steam_ids;
-        if (Array.isArray(steamIds)) {
-          sids.push(...steamIds.map(String));
-        }
-        if (typeof mapping.steam_id === "string") sids.push(mapping.steam_id);
-        if (typeof mapping.steam_alt === "string") sids.push(mapping.steam_alt);
+        sids.push(...steamIdsFromMapping(mapping));
       }
       if (!sids.length) continue;
 
-      const players = await fetchJson(`https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key=${_apiKey}&steamids=${sids.join(",")}`);
+      const players = await fetchSteam(`/ISteamUser/GetPlayerSummaries/v2/?steamids=${sids.map(encodeURIComponent).join(",")}`, _apiKey);
+      if (isSteamApiError(players)) {
+        _ctx.logger.warn(`Steam watcher 查询失败: ${players.error}`);
+        continue;
+      }
       for (const p of (players as { response?: { players?: Array<{ steamid: string; personaname: string; personastate: number; gameextrainfo?: string }> } }).response?.players ?? []) {
         newState[p.steamid] = { name: p.personaname, online: p.personastate !== 0, game: p.gameextrainfo ?? "" };
       }
-    } catch { /* skip failed groups */ }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      _ctx.logger.warn(`Steam watcher 跳过群 ${gid}: ${msg}`);
+    }
   }
 
   saveJson(STATE_FILE, newState);
@@ -106,9 +114,4 @@ async function doTick(): Promise<void> {
       await _ctx.sendMessage("group", gid, "Steam 状态变更：\n" + changes.join("\n"));
     }
   }
-}
-
-async function fetchJson(url: string): Promise<unknown> {
-  const r = await fetch(url, { signal: AbortSignal.timeout(15_000) });
-  return r.json();
 }

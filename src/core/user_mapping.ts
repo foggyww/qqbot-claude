@@ -1,6 +1,7 @@
 /** 通用用户信息映射 —— 任何插件可读写任意字段 */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { UserMappingEntry } from "./types.js";
 
 let _file = "";
 
@@ -29,10 +30,10 @@ function save(data: Record<string, Record<string, unknown>>): void {
 }
 
 /** 获取某个 QQ 的所有映射字段 */
-export function getUserMapping(qq: number | string): Record<string, unknown> {
+export function getUserMapping(qq: number | string): Partial<UserMappingEntry> {
   const data = load();
   const key = String(qq);
-  return (data.users as Record<string, Record<string, unknown>> | undefined)?.[key] ?? {};
+  return ((data.users as Record<string, Partial<UserMappingEntry>> | undefined)?.[key]) ?? {};
 }
 
 /** 设置某个 QQ 的某个字段 */

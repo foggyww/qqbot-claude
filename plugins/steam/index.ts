@@ -1,8 +1,8 @@
 /** Steam 插件 —— 自包含：命令 + MCP + 监控 */
 import type { Plugin, Command, McpServer, BotContext } from "../../src/core/types.js";
-import { getMyInfo } from "../../src/core/user_mapping.js";
 import { steamCommands } from "./commands.js";
 import { createSteamMcpServer } from "./mcp-server.js";
+import { apiKey } from "./shared.js";
 import { initWatcher, stopWatcher } from "./watcher.js";
 
 export class SteamPlugin implements Plugin {
@@ -16,10 +16,7 @@ export class SteamPlugin implements Plugin {
   mcpServers: McpServer[] = [createSteamMcpServer()];
 
   async onLoad(ctx: BotContext): Promise<void> {
-    // 从 user_mapping 获取 API key
-    const myInfo = getMyInfo() as Record<string, unknown>;
-    const apiKey = (process.env.STEAM_WEB_API_KEY ?? process.env.STEAM_API_KEY ?? myInfo.steam_api_key ?? "") as string;
-    initWatcher(ctx, apiKey);
+    initWatcher(ctx, apiKey());
   }
 
   async onUnload(_ctx: BotContext): Promise<void> {

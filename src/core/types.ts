@@ -88,12 +88,18 @@ export interface UserMapping {
   desc?: string;
   my_qq: number;
   my_steam_id: string;
-  users: Record<string, {
-    nick: string;
-    steam_id: string;
-    steam_alt?: string;
-    note?: string;
-  }>;
+  users: Record<string, UserMappingEntry>;
+}
+
+export interface UserMappingEntry {
+  nick?: string;
+  /** Preferred schema: one QQ account may map to multiple Steam IDs. */
+  steam_ids?: string[];
+  /** Deprecated legacy primary Steam ID field. */
+  steam_id?: string;
+  /** Deprecated legacy alternate Steam ID field. */
+  steam_alt?: string;
+  note?: string;
 }
 
 export type SteamPlayerState = Record<string, {

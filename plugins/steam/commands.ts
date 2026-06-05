@@ -2,9 +2,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Command, MessageContext } from "../../src/core/types.js";
+import { STEAM_SUBS_FILE } from "./shared.js";
 import { forceRefresh, restartOrStop } from "./watcher.js";
 
-const SUBS_FILE = path.join(process.cwd(), "data", "steam_subscriptions.json");
+const SUBS_FILE = STEAM_SUBS_FILE;
 
 function loadSubs(): Record<string, boolean> {
   try { return JSON.parse(fs.readFileSync(SUBS_FILE, "utf-8")); } catch { return {}; }

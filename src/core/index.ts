@@ -49,7 +49,15 @@ export {
   TimeoutError,
 } from "../ai/claude-code.js";
 export { PluginSystem } from "../plugin/index.js";
-export { clearPromptCache, loadPrompt, setPromptsDir } from "../prompt.js";
+export {
+  clearPromptCache,
+  composePrompt,
+  loadPrompt,
+  loadPromptComponent,
+  renderPromptTemplate,
+  setPromptsDir,
+} from "../prompt.js";
+export type { ComposePromptOptions, PromptVariables, PromptVariableValue } from "../prompt.js";
 export { getScheduler, reloadFrom, removeAllFor, SchedulerImpl, startScheduler } from "../scheduler/index.js";
 export { createQqMcpServer, QQ_MCP_TOOLS } from "../mcp/qq-server.js";
 export { McpHost } from "../mcp/host.js";

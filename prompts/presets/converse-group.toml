@@ -1,0 +1,12 @@
+components = [
+  "identity/bot-info",
+  "context/group-mentioned",
+  "constraints/readonly",
+  "persona/moe-girl-group",
+  "context/message-format",
+  "constraints/secret-protection",
+  "capabilities/qq-tools",
+  "capabilities/group-context",
+  "style/send-message-group",
+  "tasks/final-ok",
+]

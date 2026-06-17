@@ -7,7 +7,7 @@ import type { Command, MessageContext } from "../../core/types.js";
 import type { Plugin } from "../../core/types.js";
 import { askClaude, askClaudeRoot } from "../../ai/claude-code.js";
 import { getConfig } from "../../core/config.js";
-import { loadPrompt } from "../../prompt.js";
+import { composePrompt } from "../../prompt.js";
 
 // ---------------------------------------------------------------------------
 // Bot info cache
@@ -49,27 +49,17 @@ export async function handle(
   // Normal (non-root) mode: build system prompt
   const replyType = ctx.replyType;
   const replyId = ctx.replyId;
-  const cmd = `qqmsg ${replyType} ${replyId}`;
 
   const info = getBotInfo(ctx);
-  const botDesc = `你的QQ昵称是${info.nick}，QQ号${info.qq}。\n\n`;
-  const readonly = loadPrompt("readonly");
-
-  let chat: string;
-
-  if (replyType === "group") {
-    const target = `当前是群聊，群号${replyId}。send_message 的 type 必须填 group，target 填 ${replyId}。\n`;
-    const groupPrompt = loadPrompt("group")
-      .replace(/\{cmd\}/g, cmd)
-      .replace(/\{master_qq\}/g, String(getConfig().prompt.masterQq));
-    chat = botDesc + target + readonly + "\n\n" + groupPrompt;
-  } else {
-    const target = `当前是私聊，对方QQ${replyId}。send_message 的 type 必须填 private，target 填 ${replyId}。\n`;
-    const conversePrompt = loadPrompt("converse")
-      .replace(/\{cmd\}/g, cmd)
-      .replace(/\{master_qq\}/g, String(getConfig().prompt.masterQq));
-    chat = botDesc + target + readonly + "\n\n" + conversePrompt;
-  }
+  const chat = composePrompt({
+    preset: replyType === "group" ? "converse-group" : "converse-private",
+    variables: {
+      bot_nick: info.nick,
+      bot_qq: info.qq,
+      master_qq: getConfig().prompt.masterQq,
+      reply_id: replyId,
+    },
+  });
 
   const sessionId = store.getSessionId(sessionDir);
   return askClaude(msg, sessionDir, sessionId, chat, model, effort);

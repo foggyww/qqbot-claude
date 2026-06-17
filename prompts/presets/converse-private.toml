@@ -1,0 +1,10 @@
+components = [
+  "identity/bot-info",
+  "context/private-chat",
+  "constraints/readonly",
+  "persona/moe-girl",
+  "context/message-format",
+  "constraints/secret-protection",
+  "style/send-message-private",
+  "tasks/final-ok",
+]

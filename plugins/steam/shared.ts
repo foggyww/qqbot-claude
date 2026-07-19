@@ -9,7 +9,6 @@ const STORE_SEARCH = "https://store.steampowered.com/api/storesearch";
 export const STEAM_DATA_DIR = path.join(process.cwd(), "runtime", "data");
 export const STEAM_SUBS_FILE = path.join(STEAM_DATA_DIR, "steam_subscriptions.json");
 export const STEAM_STATE_FILE = path.join(STEAM_DATA_DIR, "steam_state.json");
-export const STEAM_WEEKLY_FILE = path.join(STEAM_DATA_DIR, "steam_weekly_state.json");
 
 export function ensureSteamDataDir(): void {
   fs.mkdirSync(STEAM_DATA_DIR, { recursive: true, mode: 0o700 });
@@ -19,7 +18,7 @@ export function ensureSteamDataDir(): void {
 export function secureExistingSteamData(dataDir = STEAM_DATA_DIR): void {
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   fs.chmodSync(dataDir, 0o700);
-  for (const name of ["steam_subscriptions.json", "steam_state.json", "steam_weekly_state.json"]) {
+  for (const name of ["steam_subscriptions.json", "steam_state.json"]) {
     const file = path.join(dataDir, name);
     if (fs.existsSync(file)) fs.chmodSync(file, 0o600);
   }

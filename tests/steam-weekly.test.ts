@@ -3,18 +3,25 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
-  calculateWeeklyRanking,
+  calculateRecentRanking,
   assignDuplicateSteamIds,
   deliverWeeklyReport,
   formatDuration,
+  formatRecentReport,
+  initWeekly,
   loadWeeklyRoastPrompt,
-  loadWeeklyState,
-  parseOwnedGames,
+  parseRecentGames,
   parseRoastLines,
-  saveWeeklyState,
+  publishRecentTwoWeekRanking,
+  publishSubscribedRecentRankings,
+  stopWeekly,
+  trackRecentPublication,
+  waitForRecentPublications,
   type SteamAccountSnapshots,
   type WeeklyParticipant,
 } from "../plugins/steam/weekly.js";
+import { setMappingFile } from "../src/core/user_mapping.js";
+import type { BotContext } from "../src/core/types.js";
 
 const participants: WeeklyParticipant[] = [
   { qq: 1, displayName: "甲", steamIds: ["steam-a", "steam-b"] },
@@ -22,43 +29,6 @@ const participants: WeeklyParticipant[] = [
 ];
 
 describe("Steam weekly ranking", () => {
-  it("calculates minute deltas and merges multiple accounts for one QQ user", () => {
-    const baseline: SteamAccountSnapshots = {
-      "steam-a": { "10": { name: "Game A", minutes: 100 } },
-      "steam-b": { "10": { name: "Game A", minutes: 20 } },
-      "steam-c": { "20": { name: "Game B", minutes: 50 } },
-    };
-    const current: SteamAccountSnapshots = {
-      "steam-a": { "10": { name: "Game A", minutes: 145 } },
-      "steam-b": { "10": { name: "Game A", minutes: 35 } },
-      "steam-c": { "20": { name: "Game B", minutes: 80 } },
-    };
-
-    expect(calculateWeeklyRanking(participants, baseline, current)).toEqual([
-      { appId: 10, name: "Game A", minutes: 60, players: ["甲"] },
-      { appId: 20, name: "Game B", minutes: 30, players: ["乙"] },
-    ]);
-  });
-
-  it("does not count lifetime minutes for accounts without a baseline", () => {
-    const current: SteamAccountSnapshots = {
-      "steam-a": { "10": { name: "Game A", minutes: 1000 } },
-    };
-
-    expect(calculateWeeklyRanking(participants, {}, current)).toEqual([]);
-  });
-
-  it("counts a newly purchased game from zero when the account has a baseline", () => {
-    const baseline: SteamAccountSnapshots = { "steam-a": {} };
-    const current: SteamAccountSnapshots = {
-      "steam-a": { "10": { name: "New Game", minutes: 35 } },
-    };
-
-    expect(calculateWeeklyRanking(participants, baseline, current)).toEqual([
-      { appId: 10, name: "New Game", minutes: 35, players: ["甲"] },
-    ]);
-  });
-
   it("assigns a Steam ID bound to multiple QQ users once, deterministically", () => {
     expect(assignDuplicateSteamIds([
       { qq: 20, displayName: "乙", steamIds: ["shared", "own-b"] },
@@ -69,65 +39,155 @@ describe("Steam weekly ranking", () => {
     ]);
   });
 
-  it("clamps decreasing totals and sorts ties deterministically", () => {
-    const baseline: SteamAccountSnapshots = {
-      "steam-a": {
-        "20": { name: "Zulu", minutes: 100 },
-        "10": { name: "Alpha", minutes: 100 },
-        "30": { name: "Reset", minutes: 100 },
-      },
-    };
-    const current: SteamAccountSnapshots = {
-      "steam-a": {
-        "20": { name: "Zulu", minutes: 110 },
-        "10": { name: "Alpha", minutes: 110 },
-        "30": { name: "Reset", minutes: 1 },
-      },
-    };
-
-    expect(calculateWeeklyRanking(participants, baseline, current).map((row) => row.appId)).toEqual([10, 20]);
-  });
-
   it("formats Steam minute precision for display", () => {
     expect(formatDuration(25)).toBe("25分钟");
     expect(formatDuration(125)).toBe("2小时5分钟");
     expect(formatDuration(120)).toBe("2小时");
   });
 
-  it("rejects malformed owned-games responses instead of clearing a baseline", () => {
-    expect(parseOwnedGames({ response: {} })).toBeNull();
-    expect(parseOwnedGames({ response: { game_count: 0 } })).toEqual({});
-    expect(parseOwnedGames({ response: { game_count: 1, games: [] } })).toBeNull();
-    expect(parseOwnedGames({ response: { game_count: 1, games: [{ appid: 10 }] } })).toBeNull();
-    expect(parseOwnedGames({ response: { game_count: null } })).toBeNull();
-    expect(parseOwnedGames({ response: { game_count: "0" } })).toBeNull();
-    expect(parseOwnedGames({ response: { game_count: 1, games: [{ appid: true, playtime_forever: 1 }] } })).toBeNull();
-    expect(parseOwnedGames({ response: { game_count: 1, games: [{ appid: 10, playtime_forever: null }] } })).toBeNull();
-    expect(parseOwnedGames({ response: { game_count: 1, games: [{ appid: 10, playtime_forever: "25" }] } })).toBeNull();
-    expect(parseOwnedGames({ response: { game_count: 1, games: [{ appid: 10, playtime_forever: 2.5 }] } })).toBeNull();
-    expect(parseOwnedGames({
-      response: { game_count: 1, games: [{ appid: 10, name: "Game", playtime_forever: 25 }] },
-    })).toEqual({ "10": { name: "Game", minutes: 25 } });
+});
+
+describe("Steam recent two-week ranking", () => {
+  it("parses strict playtime_2weeks responses", () => {
+    expect(parseRecentGames({ response: { total_count: 0 } })).toEqual({});
+    expect(parseRecentGames({
+      response: {
+        total_count: 2,
+        games: [
+          { appid: 10, name: "Game A", playtime_2weeks: 35 },
+          { appid: 20, name: "Game B", playtime_2weeks: 0 },
+        ],
+      },
+    })).toEqual({
+      "10": { name: "Game A", minutes: 35 },
+      "20": { name: "Game B", minutes: 0 },
+    });
+    expect(parseRecentGames({ response: { total_count: 1, games: [{ appid: 10 }] } })).toBeNull();
+    expect(parseRecentGames({ response: { total_count: "1", games: [] } })).toBeNull();
+    expect(parseRecentGames({ response: { total_count: 2, games: [] } })).toBeNull();
+    expect(parseRecentGames({ response: { total_count: 1, games: [{ appid: 10, playtime_2weeks: -1 }] } })).toBeNull();
+    expect(parseRecentGames({ response: { total_count: 1, games: [{ appid: 10, playtime_2weeks: 1.5 }] } })).toBeNull();
+  });
+
+  it("waits for active publications before shutdown completes", async () => {
+    let resolvePublication: ((value: { ok: boolean }) => void) | undefined;
+    const publication = new Promise<{ ok: boolean }>((resolve) => { resolvePublication = resolve; });
+    trackRecentPublication(publication);
+    let completed = false;
+    const waiting = waitForRecentPublications().then(() => { completed = true; });
+
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    resolvePublication?.({ ok: true });
+    await waiting;
+    expect(completed).toBe(true);
+  });
+
+  it("aggregates recent minutes without a weekly baseline", () => {
+    const snapshots: SteamAccountSnapshots = {
+      "steam-a": { "10": { name: "Game A", minutes: 30 } },
+      "steam-b": { "10": { name: "Game A", minutes: 20 } },
+      "steam-c": {
+        "10": { name: "Game A", minutes: 10 },
+        "20": { name: "Game B", minutes: 40 },
+      },
+    };
+
+    expect(calculateRecentRanking(participants, snapshots)).toEqual([
+      { appId: 10, name: "Game A", minutes: 60, players: ["甲", "乙"] },
+      { appId: 20, name: "Game B", minutes: 40, players: ["乙"] },
+    ]);
+  });
+
+  it("escapes untrusted game and player names in the report", () => {
+    const report = formatRecentReport(
+      new Date("2026-07-19T12:00:00Z"),
+      [{ appId: 1, name: "[CQ:at,qq=all]", minutes: 10, players: ["[CQ:image,file=x]"] }],
+      0,
+      true,
+    );
+    expect(report).toContain("&#91;CQ:at,qq=all&#93;");
+    expect(report).toContain("&#91;CQ:image,file=x&#93;");
+    expect(report).not.toContain("[CQ:");
+  });
+
+  it("schedules only weekly subscribers through the shared publisher", async () => {
+    const publish = vi.fn(async (groupId: number) => ({ ok: true, groupId, leaderboardSent: true, roastSentCount: 0 }));
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    await publishSubscribedRecentRankings({
+      "1": { status: false, weekly: true },
+      "2": { status: true, weekly: false },
+    }, publish, logger);
+    expect(publish).toHaveBeenCalledOnce();
+    expect(publish).toHaveBeenCalledWith(1);
   });
 });
 
-describe("Steam weekly state", () => {
-  it("writes atomically and refuses to replace a damaged state file", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qqbot-steam-weekly-"));
-    const file = path.join(dir, "state.json");
-    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
-    try {
-      const state = { groups: {} };
-      saveWeeklyState(state, file);
-      expect(loadWeeklyState(file, logger)).toEqual(state);
-      expect(fs.readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+describe("Steam recent publisher validation", () => {
+  function botContext(overrides: Partial<BotContext> = {}): BotContext {
+    return {
+      config: {
+        qq: { account: 1 },
+        onebot: { wsUrl: "ws://127.0.0.1:3000" },
+        paths: {
+          sessionsDir: "/tmp/sessions",
+          projectsDir: "/tmp/projects",
+          workspaceDir: "/tmp/workspace",
+          projectDir: "/tmp/project",
+          rootProjectsDir: "/tmp/root-projects",
+        },
+        env: {}, run: { useSudo: false }, models: { default: "flash", flash: "flash" },
+        efforts: { default: "high" }, settings: { timeout: 1, noPermissionReply: "无权限" },
+        roles: {}, groupWhitelist: [10], tools: [], prompt: { masterQq: 0 },
+        steamWatcher: { intervalMinutes: 5, weeklyReportCron: "0 12 * * 0" },
+      },
+      sessionDir: "/tmp/sessions",
+      adapter: {
+        start: vi.fn(), stop: vi.fn(), onMessage: vi.fn(), sendPrivateMsg: vi.fn(), sendGroupMsg: vi.fn(),
+        getGroupList: vi.fn(), getGroupMembers: vi.fn(async () => []), getGroupMsgHistory: vi.fn(),
+        getPrivateMsgHistory: vi.fn(), getStrangerInfo: vi.fn(), deleteMsg: vi.fn(),
+      },
+      sessionStore: {
+        loadModel: vi.fn(), saveModel: vi.fn(), loadEffort: vi.fn(), saveEffort: vi.fn(),
+        isRootMode: vi.fn(), setRootMode: vi.fn(), setChatMode: vi.fn(), getSessionId: vi.fn(),
+      },
+      sendMessage: vi.fn(async () => {}),
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+      scheduler: { addJob: vi.fn(), removeJob: vi.fn(), getJob: vi.fn() },
+      ...overrides,
+    };
+  }
 
-      fs.writeFileSync(file, "{", "utf-8");
-      expect(loadWeeklyState(file, logger)).toBeNull();
-      expect(fs.readFileSync(file, "utf-8")).toBe("{");
-      expect(logger.error).toHaveBeenCalled();
+  it("returns complete side-effect fields for validation failures", async () => {
+    const ctx = botContext();
+    initWeekly(ctx, "test-key");
+    try {
+      await expect(publishRecentTwoWeekRanking(20)).resolves.toMatchObject({
+        ok: false,
+        code: "GROUP_NOT_ALLOWED",
+        leaderboardSent: false,
+        roastSentCount: 0,
+      });
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await stopWeekly(ctx);
+    }
+  });
+
+  it("returns a structured collection failure from the real publisher", async () => {
+    const ctx = botContext({
+      adapter: { ...botContext().adapter, getGroupMembers: vi.fn(async () => { throw new Error("OneBot down"); }) },
+    });
+    initWeekly(ctx, "test-key");
+    setMappingFile("");
+    try {
+      await expect(publishRecentTwoWeekRanking(10)).resolves.toMatchObject({
+        ok: false,
+        code: "COLLECTION_FAILED",
+        leaderboardSent: false,
+        roastSentCount: 0,
+      });
+    } finally {
+      await stopWeekly(ctx);
     }
   });
 });
@@ -157,7 +217,7 @@ describe("Steam weekly roast delivery", () => {
       return "1. 第一刀\n- 第二刀\n第三刀\n第四刀\n第五刀\n第六刀";
     });
 
-    await deliverWeeklyReport("周榜", [{ appId: 1, name: "A", minutes: 1, players: ["甲"] }], send, generate);
+    await expect(deliverWeeklyReport("周榜", [{ appId: 1, name: "A", minutes: 1, players: ["甲"] }], send, generate)).resolves.toBe(5);
 
     expect(events).toEqual([
       "send:周榜",
@@ -178,7 +238,7 @@ describe("Steam weekly roast delivery", () => {
       [{ appId: 1, name: "A", minutes: 1, players: ["甲"] }],
       send,
       async () => { throw new Error("AI unavailable"); },
-    )).resolves.toBeUndefined();
+    )).resolves.toBe(0);
     expect(send).toHaveBeenCalledOnce();
     expect(send).toHaveBeenCalledWith("周榜");
   });
@@ -187,9 +247,24 @@ describe("Steam weekly roast delivery", () => {
     const send = vi.fn(async () => {});
     const generate = vi.fn(async () => "只有一句");
 
-    await deliverWeeklyReport("无人游玩", [], send, generate);
+    await expect(deliverWeeklyReport("无人游玩", [], send, generate)).resolves.toBe(0);
     expect(generate).not.toHaveBeenCalled();
     expect(send).toHaveBeenCalledOnce();
     expect(parseRoastLines("一句\n两句")).toEqual([]);
+  });
+
+  it("returns the number of comments sent before a later send failure", async () => {
+    let calls = 0;
+    const send = vi.fn(async () => {
+      calls += 1;
+      if (calls === 4) throw new Error("send failed");
+    });
+
+    await expect(deliverWeeklyReport(
+      "周榜",
+      [{ appId: 1, name: "A", minutes: 1, players: ["甲"] }],
+      send,
+      async () => "第一句\n第二句\n第三句\n第四句",
+    )).resolves.toBe(2);
   });
 });

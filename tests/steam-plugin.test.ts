@@ -15,6 +15,9 @@ import {
 } from "../plugins/steam/shared.js";
 import { getUserMapping, secureUserMappingFile, setMappingFile, setUserField } from "../src/core/user_mapping.js";
 import { formatWatcherChanges, parseWatcherPlayers, preserveWatcherGroupState } from "../plugins/steam/watcher.js";
+import { createSteamMcpServer } from "../plugins/steam/mcp-server.js";
+import { handleSteamCommand } from "../plugins/steam/commands.js";
+import type { MessageContext } from "../src/core/types.js";
 
 let originalFetch: typeof globalThis.fetch;
 let originalSteamWebApiKey: string | undefined;
@@ -215,5 +218,67 @@ describe("Steam watcher message safety", () => {
     expect(parseWatcherPlayers({
       response: { players: [{ steamid: "1", personaname: "name", personastate: 1, gameextrainfo: "game" }] },
     })).toEqual({ "1": { name: "name", online: true, game: "game" } });
+  });
+});
+
+describe("Steam recent ranking entry points", () => {
+  it("publishes the current group from the command without returning a duplicate reply", async () => {
+    const publish = vi.fn(async () => ({ ok: true, leaderboardSent: true }));
+    const ctx = { replyType: "group", replyId: 123 } as MessageContext;
+
+    await expect(handleSteamCommand("recent", "/tmp/session", ctx, publish)).resolves.toBeUndefined();
+    await expect(handleSteamCommand("2weeks", "/tmp/session", ctx, publish)).resolves.toBeUndefined();
+    expect(publish).toHaveBeenCalledWith(123);
+  });
+
+  it("returns a friendly command error for structured publication failures", async () => {
+    const publish = vi.fn(async () => ({
+      ok: false,
+      code: "COLLECTION_FAILED" as const,
+      error: "获取群成员或绑定信息失败",
+      leaderboardSent: false,
+      roastSentCount: 0,
+    }));
+    const ctx = { replyType: "group", replyId: 123 } as MessageContext;
+
+    await expect(handleSteamCommand("recent", "/tmp/session", ctx, publish)).resolves.toBe(
+      "生成 Steam 最近两周榜失败：获取群成员或绑定信息失败",
+    );
+  });
+
+  it("exposes an MCP tool with explicit side effects and validates group_id", async () => {
+    const publish = vi.fn(async (groupId: number) => ({ ok: true, groupId, leaderboardSent: true }));
+    const server = createSteamMcpServer(publish);
+    const tool = server.tools.find((item) => item.name === "steam_publish_group_recent_ranking");
+
+    expect(tool?.inputSchema.required).toEqual(["group_id"]);
+    await expect(server.handleToolCall("steam_publish_group_recent_ranking", { group_id: "123" })).resolves.toMatchObject({
+      ok: false,
+      code: "INVALID_GROUP_ID",
+    });
+    await expect(server.handleToolCall("steam_publish_group_recent_ranking", { group_id: 123 })).resolves.toMatchObject({
+      ok: true,
+      groupId: 123,
+    });
+    expect(publish).toHaveBeenCalledWith(123);
+  });
+
+  it("preserves structured publication failures through MCP", async () => {
+    const publish = vi.fn(async () => ({
+      ok: false,
+      code: "LEADERBOARD_SEND_FAILED" as const,
+      error: "发送最近两周榜单失败",
+      leaderboardSent: false,
+      roastSentCount: 0,
+    }));
+    const server = createSteamMcpServer(publish);
+
+    await expect(server.handleToolCall("steam_publish_group_recent_ranking", { group_id: 123 })).resolves.toEqual({
+      ok: false,
+      code: "LEADERBOARD_SEND_FAILED",
+      error: "发送最近两周榜单失败",
+      leaderboardSent: false,
+      roastSentCount: 0,
+    });
   });
 });

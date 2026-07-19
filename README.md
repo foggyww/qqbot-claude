@@ -305,6 +305,8 @@ npm test           # Vitest 测试
 
 bot 内命令可通过 `/help` 查看。内置命令按插件集组织，包括会话、模型、权限、定时任务、root 模式等能力。
 
+Steam 插件支持 `/steam recent` 主动发布当前群绑定成员的最近两周游戏榜单，并追加 AI 锐评；Agent 也可通过 `steam_publish_group_recent_ranking` MCP 工具向白名单群主动发布。
+
 ## 插件开发
 
 插件放在 `plugins/` 目录，可提供：

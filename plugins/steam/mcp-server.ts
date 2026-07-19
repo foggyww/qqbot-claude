@@ -2,6 +2,7 @@
 import type { McpServer, McpToolDefinition } from "../../src/core/types.js";
 import { getUserMapping } from "../../src/core/user_mapping.js";
 import { fetchSteam, fetchSteamStoreSearch, isSteamApiError, steamIdsFromMapping } from "./shared.js";
+import { publishRecentTwoWeekRanking, type RecentRankingPublishResult } from "./weekly.js";
 
 function resolveSteamId(args: Record<string, unknown>): string {
   if (args.steam_id) return String(args.steam_id);
@@ -32,9 +33,12 @@ const TOOLS: McpToolDefinition[] = [
   { name: "steam_get_global_achievement_percentages", description: "获取成就全球完成率", inputSchema: { type: "object", properties: { app_id: { type: "integer" } }, required: ["app_id"] } },
   { name: "steam_search_games", description: "搜索 Steam 游戏", inputSchema: { type: "object", properties: { search: { type: "string" } }, required: ["search"] } },
   { name: "steam_resolve_vanity_url", description: "Vanity URL → SteamID64", inputSchema: { type: "object", properties: { vanity_url: { type: "string" } }, required: ["vanity_url"] } },
+  { name: "steam_publish_group_recent_ranking", description: "主动向白名单 QQ 群发送 Steam 最近两周游戏榜和 AI 锐评（有消息发送副作用）", inputSchema: { type: "object", properties: { group_id: { type: "integer", description: "目标白名单 QQ 群号" } }, required: ["group_id"] } },
 ];
 
-export function createSteamMcpServer(): McpServer {
+export function createSteamMcpServer(
+  publishRecent: (groupId: number) => Promise<RecentRankingPublishResult> = publishRecentTwoWeekRanking,
+): McpServer {
   return {
     name: "qqbot-steam",
     version: "1.0.0",
@@ -70,6 +74,18 @@ export function createSteamMcpServer(): McpServer {
           return (result.items ?? []).slice(0, 15).map(i => ({ appid: i.id, name: i.name }));
         }
         case "steam_resolve_vanity_url": return fetchSteam(`/ISteamUser/ResolveVanityURL/v1/?vanityurl=${encodeURIComponent(String(args.vanity_url))}`);
+        case "steam_publish_group_recent_ranking": {
+          if (typeof args.group_id !== "number" || !Number.isSafeInteger(args.group_id)) {
+            return {
+              ok: false,
+              code: "INVALID_GROUP_ID",
+              error: "group_id 必须是整数",
+              leaderboardSent: false,
+              roastSentCount: 0,
+            };
+          }
+          return publishRecent(args.group_id);
+        }
         default: throw new Error(`Unknown tool: ${name}`);
       }
     },

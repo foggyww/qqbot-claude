@@ -247,7 +247,6 @@ Docker 和本机运行都读取同一份 `.qqbotrc.toml`；Docker Compose 只额
 - `runtime/data/user_mapping.json`：QQ → Steam/GitHub 等第三方账号映射
 - `runtime/data/steam_state.json`：Steam watcher 状态
 - `runtime/data/steam_subscriptions.json`：Steam 群订阅状态
-- `runtime/data/steam_weekly_state.json`：按群隔离的 Steam 周榜累计时长快照和发送周期
 
 ## 7. 权限与会话
 

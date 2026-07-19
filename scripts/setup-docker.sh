@@ -126,6 +126,7 @@ allowed = [
   "mcp__qqbot-steam__steam_get_global_achievement_percentages",
   "mcp__qqbot-steam__steam_search_games",
   "mcp__qqbot-steam__steam_resolve_vanity_url",
+  "mcp__qqbot-steam__steam_publish_group_recent_ranking",
 ]
 
 [steam_watcher]

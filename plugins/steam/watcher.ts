@@ -3,16 +3,16 @@ import * as fs from "node:fs";
 import type { BotContext } from "../../src/core/types.js";
 import { getUserMapping } from "../../src/core/user_mapping.js";
 import {
+  escapeOneBotText,
   fetchSteam,
   isSteamApiError,
   STEAM_STATE_FILE,
-  STEAM_SUBS_FILE,
+  loadSteamSubscriptions,
   steamIdsFromMapping,
+  writeSecureJson,
 } from "./shared.js";
 
 const STATE_FILE = STEAM_STATE_FILE;
-const SUBS_FILE = STEAM_SUBS_FILE;
-
 let _ctx: BotContext | null = null;
 let _apiKey = "";
 let _timer: ReturnType<typeof setInterval> | null = null;
@@ -23,15 +23,79 @@ function loadJson(file: string): Record<string, unknown> {
   try { return JSON.parse(fs.readFileSync(file, "utf-8")); } catch { return {}; }
 }
 function saveJson(file: string, data: unknown): void {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), "utf-8");
+  writeSecureJson(file, data);
+}
+
+interface WatcherPlayerState {
+  name: string;
+  online: boolean;
+  game: string;
+}
+
+type WatcherGroupState = Record<string, WatcherPlayerState>;
+type WatcherState = Record<string, WatcherGroupState>;
+
+function loadWatcherState(): WatcherState {
+  const value = loadJson(STATE_FILE);
+  for (const group of Object.values(value)) {
+    if (!group || typeof group !== "object" || Array.isArray(group) || "name" in group) return {};
+  }
+  return value as WatcherState;
+}
+
+export function formatWatcherChanges(previous: WatcherGroupState, current: WatcherGroupState): string[] {
+  const changes: string[] = [];
+  for (const [steamId, player] of Object.entries(current)) {
+    const prior = previous[steamId];
+    if (!prior) continue;
+    const name = escapeOneBotText(player.name);
+    const game = escapeOneBotText(player.game);
+    if (prior.online !== player.online) {
+      changes.push(player.online ? `${name} 上线了${game ? ` 在玩 ${game}` : ""}` : `${name} 离线了`);
+    } else if (player.online && prior.game !== player.game) {
+      changes.push(game ? `${name} 开始玩 ${game}` : `${name} 退出游戏`);
+    }
+  }
+  return changes;
+}
+
+export function preserveWatcherGroupState(
+  previous: WatcherGroupState,
+  collected: WatcherGroupState | null,
+): WatcherGroupState {
+  return collected ?? previous;
+}
+
+export function parseWatcherPlayers(value: unknown): WatcherGroupState | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const response = (value as Record<string, unknown>).response;
+  if (!response || typeof response !== "object" || Array.isArray(response)) return null;
+  const players = (response as Record<string, unknown>).players;
+  if (!Array.isArray(players)) return null;
+
+  const state: WatcherGroupState = {};
+  for (const value of players) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const player = value as Record<string, unknown>;
+    if (typeof player.steamid !== "string" || !player.steamid) return null;
+    if (typeof player.personaname !== "string") return null;
+    if (typeof player.personastate !== "number" || !Number.isInteger(player.personastate)) return null;
+    if (player.gameextrainfo !== undefined && typeof player.gameextrainfo !== "string") return null;
+    state[player.steamid] = {
+      name: player.personaname,
+      online: player.personastate !== 0,
+      game: player.gameextrainfo ?? "",
+    };
+  }
+  return state;
 }
 
 export function initWatcher(ctx: BotContext, apiKey: string): void {
   _ctx = ctx;
   _apiKey = apiKey;
   _intervalMs = Math.max(ctx.config.steamWatcher.intervalMinutes, 1) * 60_000;
-  const subs = loadJson(SUBS_FILE) as Record<string, boolean>;
-  if (Object.values(subs).some(Boolean)) start();
+  const subs = loadSteamSubscriptions();
+  if (Object.values(subs).some((subscription) => subscription.status)) start();
 }
 
 function start(): void {
@@ -46,8 +110,8 @@ export function stopWatcher(): void {
 
 export function restartOrStop(): void {
   stopWatcher();
-  const subs = loadJson(SUBS_FILE) as Record<string, boolean>;
-  if (Object.values(subs).some(Boolean)) start();
+  const subs = loadSteamSubscriptions();
+  if (Object.values(subs).some((subscription) => subscription.status)) start();
 }
 
 export async function forceRefresh(_groupId: number): Promise<string | null> {
@@ -65,14 +129,15 @@ async function tick(): Promise<void> {
 async function doTick(): Promise<void> {
   if (!_ctx || !_apiKey) return;
 
-  const subs = loadJson(SUBS_FILE) as Record<string, boolean>;
-  const activeGroups = Object.entries(subs).filter(([, v]) => v).map(([k]) => Number(k));
+  const subs = loadSteamSubscriptions();
+  const activeGroups = Object.entries(subs).filter(([, subscription]) => subscription.status).map(([k]) => Number(k));
   if (!activeGroups.length) return;
 
-  const oldState = loadJson(STATE_FILE) as Record<string, { name: string; online: boolean; game: string }>;
-  const newState: Record<string, { name: string; online: boolean; game: string }> = {};
+  const oldState = loadWatcherState();
+  const newState: WatcherState = {};
 
   for (const gid of activeGroups) {
+    const groupState: WatcherGroupState = {};
     try {
       const members = await _ctx.adapter.getGroupMembers(gid);
       const sids: string[] = [];
@@ -80,19 +145,28 @@ async function doTick(): Promise<void> {
         const mapping = getUserMapping(member.qq);
         sids.push(...steamIdsFromMapping(mapping));
       }
-      if (!sids.length) continue;
+      if (!sids.length) {
+        newState[String(gid)] = groupState;
+        continue;
+      }
 
       const players = await fetchSteam(`/ISteamUser/GetPlayerSummaries/v2/?steamids=${sids.map(encodeURIComponent).join(",")}`, _apiKey);
       if (isSteamApiError(players)) {
         _ctx.logger.warn(`Steam watcher 查询失败: ${players.error}`);
+        newState[String(gid)] = preserveWatcherGroupState(oldState[String(gid)] ?? {}, null);
         continue;
       }
-      for (const p of (players as { response?: { players?: Array<{ steamid: string; personaname: string; personastate: number; gameextrainfo?: string }> } }).response?.players ?? []) {
-        newState[p.steamid] = { name: p.personaname, online: p.personastate !== 0, game: p.gameextrainfo ?? "" };
+      const parsedPlayers = parseWatcherPlayers(players);
+      if (parsedPlayers === null) {
+        _ctx.logger.warn(`Steam watcher 群 ${gid} 返回结构无效，保留旧状态`);
+        newState[String(gid)] = preserveWatcherGroupState(oldState[String(gid)] ?? {}, null);
+        continue;
       }
+      newState[String(gid)] = parsedPlayers;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       _ctx.logger.warn(`Steam watcher 跳过群 ${gid}: ${msg}`);
+      newState[String(gid)] = preserveWatcherGroupState(oldState[String(gid)] ?? {}, null);
     }
   }
 
@@ -100,16 +174,7 @@ async function doTick(): Promise<void> {
   if (_firstRun) { _firstRun = false; return; }
 
   for (const gid of activeGroups) {
-    const changes: string[] = [];
-    for (const [sid, cur] of Object.entries(newState)) {
-      const prev = oldState[sid];
-      if (!prev) continue;
-      if (prev.online !== cur.online) {
-        changes.push(cur.online ? `${cur.name} 上线了${cur.game ? ` 在玩 ${cur.game}` : ""}` : `${cur.name} 离线了`);
-      } else if (cur.online && prev.game !== cur.game) {
-        changes.push(cur.game ? `${cur.name} 开始玩 ${cur.game}` : `${cur.name} 退出游戏`);
-      }
-    }
+    const changes = formatWatcherChanges(oldState[String(gid)] ?? {}, newState[String(gid)] ?? {});
     if (changes.length) {
       await _ctx.sendMessage("group", gid, "Steam 状态变更：\n" + changes.join("\n"));
     }

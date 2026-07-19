@@ -230,6 +230,8 @@ mcp__<server-name>__<tool-name>
 plugins/steam/
 ├── index.ts                    qqbot-ts 插件入口
 ├── mcp-server.ts               qqbot-ts MCP server
+├── prompts/                    Steam 插件私有 Prompt，运行时热读取
+│   └── weekly-roast.md
 └── claude-plugin/              Claude Code 原生插件目录
     ├── .claude-plugin/plugin.json
     ├── hooks/hooks.json
@@ -278,6 +280,7 @@ Steam 的 `skills/steam.md` 会让 Claude Code 知道 Steam MCP 工具的使用�
 - 插件类必须可无参构造；配置放到 `onLoad(ctx)` 中读取。
 - 生产运行时应使用 `dist/plugins`，不要直接加载源码 `.ts` 插件。
 - `tsc` 不复制 Markdown/JSON/hooks/skills，非 TS 资产需要构建脚本复制。
+- 插件私有 Prompt 应放在插件自身的 `prompts/` 目录，通过 `import.meta.url` 相对插件模块解析；不要放进项目根目录的核心 Prompt 命名空间。
 - prefix 重复会覆盖，虽然现在会 warning。
 - `onMessage` 只是监听，不能阻止后续 Router 处理。
 - 不要创建第二条 QQ 通道。

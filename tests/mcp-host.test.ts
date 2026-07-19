@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setMcpServerNames, writeMcpConfig } from "../src/ai/claude-code.js";
-import { McpHost } from "../src/mcp/host.js";
+import { isLoopbackHost, McpHost, normalizeMcpPort } from "../src/mcp/host.js";
 import type { Logger, McpServer } from "../src/core/types.js";
 
 let originalMcpHost: string | undefined;
@@ -78,6 +78,24 @@ describe("Claude MCP config", () => {
 });
 
 describe("McpHost", () => {
+  it("only permits unauthenticated loopback listeners", async () => {
+    expect(isLoopbackHost("127.0.0.1")).toBe(true);
+    expect(isLoopbackHost("127.255.255.255")).toBe(true);
+    expect(isLoopbackHost("::1")).toBe(false);
+    expect(isLoopbackHost("127.999.999.999")).toBe(false);
+    expect(isLoopbackHost("0.0.0.0")).toBe(false);
+
+    const host = new McpHost([server("one")], logger(), "0.0.0.0", 8765);
+    await expect(host.start()).rejects.toThrow("拒绝监听非本机地址");
+  });
+
+  it("rejects invalid or authority-injecting MCP ports", () => {
+    expect(normalizeMcpPort("8765")).toBe(8765);
+    for (const value of ["8765@evil.example", "-1", "1.5", "0x20", "0", "65536"]) {
+      expect(() => normalizeMcpPort(value)).toThrow();
+    }
+  });
+
   it("rejects duplicate MCP server names", () => {
     expect(() => new McpHost([server("dup"), server("dup")], logger())).toThrow("Duplicate MCP server name: dup");
   });

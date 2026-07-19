@@ -24,7 +24,7 @@ function mockCtx(): BotContext {
       groupWhitelist: [],
       tools: [],
       prompt: { masterQq: 0 },
-      steamWatcher: { intervalMinutes: 5 },
+      steamWatcher: { intervalMinutes: 5, weeklyReportCron: "0 12 * * 0" },
     },
     sessionDir: "/tmp/sessions",
     adapter: {
@@ -110,5 +110,26 @@ describe("PluginSystem", () => {
 
     await system.unregister("test-mcp");
     expect(getRegisteredCommands().has("/test-plugin-system")).toBe(false);
+  });
+
+  it("unloads every plugin in reverse order and continues after an unload error", async () => {
+    const ctx = mockCtx();
+    const calls: string[] = [];
+    const system = new PluginSystem(ctx);
+    await system.register({ name: "first", version: "1", onUnload: async () => { calls.push("first"); } });
+    await system.register({
+      name: "second",
+      version: "1",
+      onUnload: async () => {
+        calls.push("second");
+        throw new Error("broken cleanup");
+      },
+    });
+
+    await system.unregisterAll();
+
+    expect(calls).toEqual(["second", "first"]);
+    expect(system.list()).toEqual([]);
+    expect(ctx.logger.error).toHaveBeenCalledWith(expect.stringContaining("broken cleanup"));
   });
 });

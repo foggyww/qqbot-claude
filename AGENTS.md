@@ -44,7 +44,7 @@ qqbot-ts 是一个 TypeScript Node.js QQ 机器人，把 Claude Code CLI 作为 
 - Docker 和本机默认共用项目根目录的同一份 `.qqbotrc.toml`。
 - `.env` 仅用于 Docker Compose / NapCat 编排变量，不作为 qqbot 主配置。
 - NapCat 登录态和配置由 NapCat 自己的 volume 管理，不能混入 qqbot runtime。
-- Prompt 必须从 `prompts/*.md` 读取，支持热更新；禁止在代码里硬编码大段 prompt。
+- 核心 Prompt 必须从项目根目录 `prompts/*.md` 读取；插件私有 Prompt 必须放在插件自身的 `prompts/` 目录。两者都必须在使用时读取磁盘以支持热更新，禁止在代码里硬编码大段 prompt。
 - API key、token、cookie、QQ 登录态、`.qqbotrc.toml`、`.env`、`runtime/` 禁止提交。
 
 ## 5. Subagent 使用规则

@@ -139,3 +139,5 @@ allowed = [
 [steam_watcher]
 # Steam 状态轮询间隔（分钟），设为 0 禁用
 interval_minutes = 5
+# Steam 周榜使用 UTC cron；默认值对应北京时间每周日 20:00
+weekly_report_cron = "0 12 * * 0"

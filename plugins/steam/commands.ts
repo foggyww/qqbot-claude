@@ -1,36 +1,28 @@
 /** Steam 插件命令: /steam subscribe|unsubscribe|status|refresh */
-import * as fs from "node:fs";
-import * as path from "node:path";
 import type { Command, MessageContext } from "../../src/core/types.js";
-import { STEAM_SUBS_FILE } from "./shared.js";
+import { loadSteamSubscriptions, saveSteamSubscriptions } from "./shared.js";
+import { initializeWeeklyGroup } from "./weekly.js";
 import { forceRefresh, restartOrStop } from "./watcher.js";
-
-const SUBS_FILE = STEAM_SUBS_FILE;
-
-function loadSubs(): Record<string, boolean> {
-  try { return JSON.parse(fs.readFileSync(SUBS_FILE, "utf-8")); } catch { return {}; }
-}
-function saveSubs(data: Record<string, boolean>): void {
-  fs.mkdirSync(path.dirname(SUBS_FILE), { recursive: true });
-  fs.writeFileSync(SUBS_FILE, JSON.stringify(data), "utf-8");
-}
 
 async function handle(msg: string, sessionDir: string, ctx: MessageContext): Promise<string> {
   if (ctx.replyType !== "group") return "此命令仅在群聊中使用";
 
   const groupId = String(ctx.replyId);
   const sub = msg.trim().toLowerCase();
-  const data = loadSubs();
+  const data = loadSteamSubscriptions();
+  const subscription = data[groupId] ?? { status: false, weekly: false };
 
   if (sub === "subscribe" || sub === "sub") {
-    data[groupId] = true;
-    saveSubs(data);
+    subscription.status = true;
+    data[groupId] = subscription;
+    saveSteamSubscriptions(data);
     restartOrStop();
     return "已开启本群 Steam 状态推送";
   }
   if (sub === "unsubscribe" || sub === "unsub") {
-    data[groupId] = false;
-    saveSubs(data);
+    subscription.status = false;
+    data[groupId] = subscription;
+    saveSteamSubscriptions(data);
     restartOrStop();
     return "已关闭本群 Steam 状态推送";
   }
@@ -39,17 +31,33 @@ async function handle(msg: string, sessionDir: string, ctx: MessageContext): Pro
     return err ?? "已刷新当前 Steam 状态";
   }
   if (sub === "status" || sub === "") {
-    const active = data[groupId] ?? false;
-    const count = Object.values(data).filter(Boolean).length;
-    return `本群: ${active ? "已订阅" : "未订阅"}\n当前活跃订阅: ${count} 个群`;
+    const count = Object.values(data).filter((entry) => entry.status).length;
+    return `Steam 状态推送: ${subscription.status ? "已订阅" : "未订阅"}\nSteam 游戏周榜: ${subscription.weekly ? "已订阅" : "未订阅"}\n当前状态推送订阅: ${count} 个群`;
   }
-  return "用法: /steam subscribe | unsubscribe | status | refresh";
+  if (sub === "weekly subscribe" || sub === "weekly sub") {
+    const wasSubscribed = subscription.weekly;
+    subscription.weekly = true;
+    data[groupId] = subscription;
+    saveSteamSubscriptions(data);
+    const result = await initializeWeeklyGroup(Number(groupId), !wasSubscribed);
+    return result ?? "已开启本群 Steam 游戏周榜，并建立当前游玩时长基线";
+  }
+  if (sub === "weekly unsubscribe" || sub === "weekly unsub") {
+    subscription.weekly = false;
+    data[groupId] = subscription;
+    saveSteamSubscriptions(data);
+    return "已关闭本群 Steam 游戏周榜";
+  }
+  if (sub === "weekly status") {
+    return `本群 Steam 游戏周榜: ${subscription.weekly ? "已订阅" : "未订阅"}`;
+  }
+  return "用法: /steam subscribe | unsubscribe | status | refresh | weekly subscribe | weekly unsubscribe | weekly status";
 }
 
 export const steamCommands: Command[] = [
   {
     name: "steam",
-    description: "Steam 状态监控订阅",
+    description: "Steam 状态监控与游戏周榜订阅",
     prefix: "/steam",
     minLevel: 2,
     handler: handle,

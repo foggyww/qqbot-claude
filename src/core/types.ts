@@ -108,7 +108,12 @@ export type SteamPlayerState = Record<string, {
   game: string;
 }>;
 
-export type SteamSubscriptionMap = Record<string, boolean>;
+export interface SteamGroupSubscription {
+  status: boolean;
+  weekly: boolean;
+}
+
+export type SteamSubscriptionMap = Record<string, SteamGroupSubscription>;
 
 // ==== 群聊缓存 ====
 
@@ -161,6 +166,7 @@ export interface SchedulerRef {
   ): void;
   removeJob(id: string): void;
   getJob(id: string): unknown;
+  stop?(): void;
 }
 
 // ==== 配置 ====
@@ -184,7 +190,7 @@ export interface BotConfig {
   groupWhitelist: number[];
   tools: string[];
   prompt: { masterQq: number };
-  steamWatcher: { intervalMinutes: number };
+  steamWatcher: { intervalMinutes: number; weeklyReportCron: string };
 }
 
 // ==== 基础接口 ====

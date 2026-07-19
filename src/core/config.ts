@@ -136,6 +136,32 @@ function normalizeNonNegativeNumber(value: unknown, fallback: number, label: str
   return n;
 }
 
+function normalizeCron(value: unknown, fallback: string, label: string): string {
+  const expression = safeString(value, fallback).trim();
+  const fields = expression.split(/\s+/);
+  const ranges: Array<[number, number]> = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 6]];
+  const valid = fields.length === 5 && fields.every((field, index) => {
+    const [min, max] = ranges[index];
+    return field.split(",").every((part) => {
+      const pieces = part.split("/");
+      if (pieces.length > 2) return false;
+      const [range, stepText] = pieces;
+      if (stepText !== undefined && (!/^\d+$/.test(stepText) || Number(stepText) <= 0)) return false;
+      if (range === "*") return true;
+      const bounds = range.split("-");
+      if (bounds.length > 2 || bounds.some((bound) => !/^\d+$/.test(bound))) return false;
+      const start = Number(bounds[0]);
+      const end = Number(bounds[1] ?? bounds[0]);
+      return start >= min && end <= max && start <= end;
+    });
+  });
+  if (!valid) {
+    warnConfig(`${label} 必须是五段 cron 表达式，使用默认值 ${fallback}`);
+    return fallback;
+  }
+  return expression;
+}
+
 function warnIfMissingOrPlaceholderAiKey(env: Record<string, string>): void {
   const token = env.ANTHROPIC_AUTH_TOKEN || env.DEEPSEEK_API_KEY || "";
   if (!token) {
@@ -299,6 +325,7 @@ export async function loadConfig(configPath?: string): Promise<BotConfig> {
     prompt: { masterQq: safeNumber((raw.prompt as Record<string, unknown> | undefined)?.master_qq as unknown, 0) },
     steamWatcher: {
       intervalMinutes: normalizeNonNegativeNumber((raw.steam_watcher as Record<string, unknown> | undefined)?.interval_minutes as unknown, 5, "[steam_watcher].interval_minutes"),
+      weeklyReportCron: normalizeCron((raw.steam_watcher as Record<string, unknown> | undefined)?.weekly_report_cron, "0 12 * * 0", "[steam_watcher].weekly_report_cron"),
     },
   };
 

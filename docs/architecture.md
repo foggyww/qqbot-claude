@@ -61,6 +61,8 @@ loadConfig(.qqbotrc.toml) → new OneBotAdapter(config.onebot.wsUrl) → new Bot
   │   └─ McpHost.start()       启动项目内 MCP HTTP JSON-RPC Host
   │
   └─ stop()
+      ├─ Scheduler.stop()
+      ├─ PluginSystem.unregisterAll()
       ├─ McpHost.stop()
       └─ adapter.stop()
 ```
@@ -189,7 +191,7 @@ POST /mcp/qqbot-steam
 默认监听：
 
 ```text
-QQBOT_MCP_HOST=127.0.0.1
+QQBOT_MCP_HOST=127.0.0.1  # 未配置认证时仅允许 loopback
 QQBOT_MCP_PORT=8765
 ```
 
@@ -245,6 +247,7 @@ Docker 和本机运行都读取同一份 `.qqbotrc.toml`；Docker Compose 只额
 - `runtime/data/user_mapping.json`：QQ → Steam/GitHub 等第三方账号映射
 - `runtime/data/steam_state.json`：Steam watcher 状态
 - `runtime/data/steam_subscriptions.json`：Steam 群订阅状态
+- `runtime/data/steam_weekly_state.json`：按群隔离的 Steam 周榜累计时长快照和发送周期
 
 ## 7. 权限与会话
 

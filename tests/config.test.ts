@@ -64,6 +64,7 @@ master_qq = 999
 
 [steam_watcher]
 interval_minutes = 7
+weekly_report_cron = "30 11 * * 0"
 ${extra}
 `;
 }
@@ -109,6 +110,7 @@ describe("loadConfig", () => {
     expect(config.settings.timeout).toBe(42);
     expect(config.groupWhitelist).toEqual([10]);
     expect(config.steamWatcher.intervalMinutes).toBe(7);
+    expect(config.steamWatcher.weeklyReportCron).toBe("30 11 * * 0");
   });
 
   it("lets environment variables override selected fields", async () => {
@@ -186,6 +188,24 @@ value = true
     expect(config.steamWatcher.intervalMinutes).toBe(5);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("[settings].timeout 必须为正数"));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("[steam_watcher].interval_minutes 不能为负数"));
+  });
+
+  it("falls back when the Steam weekly cron is invalid", async () => {
+    const content = minimalConfig().replace('weekly_report_cron = "30 11 * * 0"', 'weekly_report_cron = "invalid"');
+
+    const config = await loadConfig(writeConfig(content));
+
+    expect(config.steamWatcher.weeklyReportCron).toBe("0 12 * * 0");
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("[steam_watcher].weekly_report_cron"));
+  });
+
+  it("rejects out-of-range Steam weekly cron fields", async () => {
+    const content = minimalConfig().replace('weekly_report_cron = "30 11 * * 0"', 'weekly_report_cron = "60 25 * * 9"');
+
+    const config = await loadConfig(writeConfig(content));
+
+    expect(config.steamWatcher.weeklyReportCron).toBe("0 12 * * 0");
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("[steam_watcher].weekly_report_cron"));
   });
 
   it("warns and skips invalid role levels", async () => {

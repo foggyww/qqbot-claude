@@ -8,6 +8,7 @@ import * as path from "node:path";
 import { getConfig } from "../core/config.js";
 import type { AiBackend } from "../core/types.js";
 import { getProjectSessionId } from "../core/encode-path.js";
+import { isLoopbackHost, normalizeMcpPort } from "../mcp/host.js";
 
 // ---------------------------------------------------------------------------
 // Module-level Claude Code integration state (set by Bot.init)
@@ -40,6 +41,89 @@ interface RunClaudeOptions {
   runAsRoot: boolean;
   addDirs: string | undefined;
   ccPluginDirs?: string[];
+  disableTools?: boolean;
+}
+
+export function buildToolPermissionArgs(disableTools: boolean, configuredTools: string[]): string[] {
+  if (disableTools) {
+    return [
+      "--permission-mode", "dontAsk",
+      "--tools", "",
+      "--strict-mcp-config",
+      "--bare",
+      "--disable-slash-commands",
+      "--no-session-persistence",
+    ];
+  }
+  const allowedTools = configuredTools.length > 0
+    ? configuredTools.join(",")
+    : "Read,Bash,Edit,Write";
+  return ["--permission-mode", "acceptEdits", "--allowedTools", allowedTools];
+}
+
+const SAFE_ONE_SHOT_ENV_KEYS = new Set([
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "CLAUDE_CODE_EFFORT_LEVEL",
+  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+  "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK",
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "PATH",
+  "SHELL",
+  "TERM",
+  "TMPDIR",
+]);
+
+export function buildClaudeEnvironment(
+  processEnv: NodeJS.ProcessEnv,
+  configEnv: Record<string, string>,
+  disableTools: boolean,
+): NodeJS.ProcessEnv {
+  const merged: NodeJS.ProcessEnv = { ...processEnv };
+  for (const [key, value] of Object.entries(configEnv)) {
+    if (value) merged[key] = value;
+  }
+  if (!disableTools) return merged;
+
+  const safe: NodeJS.ProcessEnv = {};
+  for (const key of SAFE_ONE_SHOT_ENV_KEYS) {
+    if (merged[key]) safe[key] = merged[key];
+  }
+  safe.ANTHROPIC_API_KEY = merged.ANTHROPIC_API_KEY
+    ?? merged.ANTHROPIC_AUTH_TOKEN
+    ?? merged.DEEPSEEK_API_KEY;
+  delete safe.ANTHROPIC_AUTH_TOKEN;
+  return safe;
+}
+
+export function selectClaudeOutput(
+  exitCode: number | null,
+  stdoutText: string,
+  stderrText: string,
+  disableTools: boolean,
+): string {
+  if (exitCode !== 0 && exitCode !== null) {
+    if (disableTools) throw new Error(`Claude one-shot failed with exit code ${exitCode}`);
+  }
+  if (stdoutText) return stdoutText;
+  if (disableTools) throw new Error("Claude one-shot returned no output");
+  return stderrText || "(Claude Code 无输出)";
+}
+
+export function getPreservedEnvironmentKeys(
+  subprocessEnv: NodeJS.ProcessEnv,
+  configEnv: Record<string, string>,
+  disableTools: boolean,
+): string[] {
+  const source = disableTools ? subprocessEnv : configEnv;
+  return Object.keys(source).filter((key) => source[key]);
 }
 
 /**
@@ -54,19 +138,15 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
   // Ensure session directory exists
   fs.mkdirSync(sessionDir, { recursive: true });
 
-  const mcpConfigPath = writeMcpConfig(sessionDir);
+  const mcpConfigPath = writeMcpConfig(sessionDir, opts.disableTools ? [] : _mcpServerNames);
 
   // ---- Build arguments ----
-  const dirs = normalizeAddDirs(opts.addDirs || config.paths.workspaceDir);
-  const allowedTools = config.tools.length > 0
-    ? config.tools.join(",")
-    : "Read,Bash,Edit,Write";
+  const dirs = opts.disableTools ? [] : normalizeAddDirs(opts.addDirs || config.paths.workspaceDir);
 
   const claudeArgs: string[] = [
     "claude",
     "-p", opts.msg,
-    "--permission-mode", "acceptEdits",
-    "--allowedTools", allowedTools,
+    ...buildToolPermissionArgs(opts.disableTools === true, config.tools),
     "--mcp-config", mcpConfigPath,
   ];
   for (const dir of dirs) {
@@ -74,7 +154,7 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
   }
 
   if (opts.systemPrompt) {
-    claudeArgs.push("--append-system-prompt", opts.systemPrompt);
+    claudeArgs.push(opts.disableTools ? "--system-prompt" : "--append-system-prompt", opts.systemPrompt);
   }
   if (model) {
     claudeArgs.push("--model", model);
@@ -96,10 +176,7 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
 
   // ---- Build environment ----
   // Start with current process env, then overlay config.env
-  const subprocessEnv: NodeJS.ProcessEnv = { ...process.env };
-  for (const [k, v] of Object.entries(config.env)) {
-    if (v) subprocessEnv[k] = v;
-  }
+  const subprocessEnv = buildClaudeEnvironment(process.env, config.env, opts.disableTools === true);
   if (!subprocessEnv.CLAUDE_CONFIG_DIR) {
     subprocessEnv.CLAUDE_CONFIG_DIR = path.resolve(path.dirname(config.paths.projectsDir));
   }
@@ -132,7 +209,7 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
       }
     }
 
-    const envKeys = Object.keys(config.env).filter((k) => config.env[k]);
+    const envKeys = getPreservedEnvironmentKeys(subprocessEnv, config.env, opts.disableTools === true);
     const preserveKeys = envKeys.join(",");
 
     cmd = "sudo";
@@ -190,17 +267,11 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
     const stderrText = Buffer.concat(stderrChunks).toString("utf-8").trim();
 
     if (exitCode !== 0 && exitCode !== null) {
-      const preview = stderrText.slice(0, 200);
-      console.warn(`[claude] exit=${exitCode} stderr=${preview}`);
+      console.warn(opts.disableTools ? `[claude] one-shot exit=${exitCode}` : `[claude] exit=${exitCode} stderr_len=${stderrText.length}`);
     }
-
-    if (stdoutText) {
-      const preview = stdoutText.slice(0, 120);
-      console.info(`[claude] stdout_len=${stdoutText.length} preview=${preview}`);
-      return stdoutText;
-    }
-
-    return stderrText || "(Claude Code 无输出)";
+    const output = selectClaudeOutput(exitCode, stdoutText, stderrText, opts.disableTools === true);
+    console.info(`[claude] stdout_len=${output.length}`);
+    return output;
   } catch (err: unknown) {
     // Ensure subprocess is killed on error
     try {
@@ -218,7 +289,8 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
 
 export function writeMcpConfig(sessionDir: string, serverNames = _mcpServerNames): string {
   const host = process.env.QQBOT_MCP_HOST ?? "127.0.0.1";
-  const port = process.env.QQBOT_MCP_PORT ?? "8765";
+  if (!isLoopbackHost(host)) throw new Error(`QQBOT_MCP_HOST 必须是 loopback 地址，当前为 ${host}`);
+  const port = normalizeMcpPort(process.env.QQBOT_MCP_PORT ?? 8765);
   const filePath = path.resolve(sessionDir, ".qqbot-mcp.json");
   const mcpServers: Record<string, { type: "http"; url: string }> = {};
   for (const name of normalizeMcpServerNames(serverNames)) {
@@ -391,6 +463,28 @@ export async function askClaude(
   ccPluginDirs?: string[],
 ): Promise<string> {
   return getClaudeCodeBackend().ask(msg, sessionDir, sessionId, systemPrompt, model, effort, undefined, ccPluginDirs);
+}
+
+/** Run a one-shot text generation with built-in tools, MCP, plugins and project settings disabled. */
+export async function askClaudeWithoutTools(
+  msg: string,
+  sessionDir: string,
+  systemPrompt: string,
+  model?: string,
+  effort?: string,
+): Promise<string> {
+  return _runClaude({
+    msg,
+    sessionDir,
+    sessionId: null,
+    systemPrompt,
+    model,
+    effort,
+    runAsRoot: false,
+    addDirs: undefined,
+    ccPluginDirs: [],
+    disableTools: true,
+  });
 }
 
 /**

@@ -14,6 +14,13 @@ function getFile(): string {
   return path.join(process.cwd(), "runtime", "data", "user_mapping.json");
 }
 
+export function secureUserMappingFile(filePath = getFile()): void {
+  const dir = path.dirname(filePath);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(dir, 0o700);
+  if (fs.existsSync(filePath)) fs.chmodSync(filePath, 0o600);
+}
+
 function load(): Record<string, Record<string, unknown>> {
   try {
     if (fs.existsSync(getFile())) {
@@ -24,9 +31,16 @@ function load(): Record<string, Record<string, unknown>> {
 }
 
 function save(data: Record<string, Record<string, unknown>>): void {
-  const dir = path.dirname(getFile());
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(getFile(), JSON.stringify(data, null, 2), "utf-8");
+  const file = getFile();
+  secureUserMappingFile(file);
+  const temporaryFile = `${file}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(temporaryFile, JSON.stringify(data, null, 2), { encoding: "utf-8", mode: 0o600 });
+    fs.renameSync(temporaryFile, file);
+    fs.chmodSync(file, 0o600);
+  } finally {
+    fs.rmSync(temporaryFile, { force: true });
+  }
 }
 
 /** 获取某个 QQ 的所有映射字段 */

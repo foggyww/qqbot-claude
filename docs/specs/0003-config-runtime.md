@@ -38,7 +38,7 @@ Accepted
 - runtime 子目录缺失时应创建。
 - 配置解析错误必须明确报错。
 - `[qq].account` 必须是正整数；`[onebot].ws_url` 必须以 `ws://` 或 `wss://` 开头。
-- 非法 timeout、Steam watcher 间隔、角色等级等可疑配置应告警并使用安全默认值或跳过。
+- 非法 timeout、Steam watcher 间隔、Steam 周榜 cron、角色等级等可疑配置应告警并使用安全默认值或跳过。
 
 ## Security
 

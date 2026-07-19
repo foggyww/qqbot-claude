@@ -1,8 +1,23 @@
 /** In-project MCP host. Starts and stops with the Bot lifecycle. */
 import * as http from "node:http";
+import * as net from "node:net";
 import type { Logger, McpServer } from "../core/types.js";
 
 const MAX_BODY_SIZE_BYTES = 1_048_576;
+
+export function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  if (normalized === "localhost") return true;
+  return net.isIP(normalized) === 4 && normalized.startsWith("127.");
+}
+
+export function normalizeMcpPort(value: unknown): number {
+  const text = typeof value === "number" ? String(value) : String(value ?? "");
+  if (!/^\d+$/.test(text)) throw new Error(`MCP port 必须是十进制整数: ${text}`);
+  const port = Number(text);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`MCP port 超出范围: ${text}`);
+  return port;
+}
 
 interface JsonRpcRequest {
   jsonrpc?: string;
@@ -31,7 +46,7 @@ export class McpHost {
     servers: McpServer[],
     private readonly logger: Logger,
     private readonly host = process.env.QQBOT_MCP_HOST ?? "127.0.0.1",
-    private readonly port = Number(process.env.QQBOT_MCP_PORT ?? 8765),
+    private readonly port: number | string = process.env.QQBOT_MCP_PORT ?? 8765,
   ) {
     for (const server of servers) {
       if (this.servers.has(server.name)) {
@@ -43,6 +58,10 @@ export class McpHost {
 
   async start(): Promise<void> {
     if (this.server) return;
+    if (!isLoopbackHost(this.host)) {
+      throw new Error(`MCP Host 拒绝监听非本机地址 ${this.host}；当前 endpoint 未提供远程认证`);
+    }
+    const port = normalizeMcpPort(this.port);
 
     this.server = http.createServer((req, res) => {
       this.handleHttp(req, res).catch((err: unknown) => {
@@ -53,11 +72,11 @@ export class McpHost {
 
     await new Promise<void>((resolve, reject) => {
       this.server!.once("error", reject);
-      this.server!.listen(this.port, this.host, () => resolve());
+      this.server!.listen(port, this.host, () => resolve());
     });
 
     const names = [...this.servers.keys()].join(", ");
-    this.logger.info(`MCP Host 已启动: http://${this.host}:${this.port}/mcp/<server> (${names})`);
+    this.logger.info(`MCP Host 已启动: http://${this.host}:${port}/mcp/<server> (${names})`);
   }
 
   async stop(): Promise<void> {

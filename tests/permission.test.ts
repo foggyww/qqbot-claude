@@ -23,7 +23,7 @@ function baseConfig(): BotConfig {
     groupWhitelist: [789],
     tools: [],
     prompt: { masterQq: 0 },
-    steamWatcher: { intervalMinutes: 5 },
+    steamWatcher: { intervalMinutes: 5, weeklyReportCron: "0 12 * * 0" },
   };
 }
 

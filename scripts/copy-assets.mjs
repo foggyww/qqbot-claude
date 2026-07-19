@@ -21,3 +21,7 @@ copyDir(
   path.resolve("plugins/steam/claude-plugin"),
   path.resolve("dist/plugins/steam/claude-plugin"),
 );
+copyDir(
+  path.resolve("plugins/steam/prompts"),
+  path.resolve("dist/plugins/steam/prompts"),
+);

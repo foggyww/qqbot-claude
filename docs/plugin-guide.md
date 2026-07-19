@@ -137,6 +137,19 @@ export default class MyPlugin implements Plugin {
 
 如果插件需要操作 QQ，优先使用 `BotContext.adapter` 或 `BotContext.sendMessage`，不要创建第二条 QQ 通道。
 
+## 插件私有 Prompt
+
+插件专用 Prompt 应随插件放在自己的 `prompts/` 目录，不要放到项目根目录的核心 `prompts/`：
+
+```text
+plugins/my-plugin/
+├── index.ts
+└── prompts/
+    └── task.md
+```
+
+使用 `new URL("./prompts/task.md", import.meta.url)` 定位，并在每次使用时重新读取文件以支持热更新。构建脚本必须把这些非 TypeScript 资产复制到对应的 `dist/plugins/.../prompts/` 目录。
+
 ## 如何发布 npm 包
 
 1. **目录结构**

@@ -81,13 +81,24 @@ export class PluginSystem {
       this.ccPluginDirs = this.ccPluginDirs.filter(d => !d.endsWith(plugin.ccPluginDir!));
     }
 
-    // 调用 onUnload 钩子
-    if (plugin.onUnload) {
-      await plugin.onUnload(this.ctx);
+    try {
+      if (plugin.onUnload) await plugin.onUnload(this.ctx);
+    } finally {
+      this.plugins.delete(name);
     }
-
-    this.plugins.delete(name);
     this.ctx.logger.info(`插件 "${name}" 已卸载`);
+  }
+
+  async unregisterAll(): Promise<void> {
+    const names = [...this.plugins.keys()].reverse();
+    for (const name of names) {
+      try {
+        await this.unregister(name);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.ctx.logger.error(`卸载插件 "${name}" 失败: ${message}`);
+      }
+    }
   }
 
   /**

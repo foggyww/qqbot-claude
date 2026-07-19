@@ -251,10 +251,24 @@ export class Bot {
   }
 
   async stop(): Promise<void> {
-    if (!this.started) return;
-    await this.mcpHost?.stop();
-    this.mcpHost = null;
-    await this.adapter.stop();
+    this.scheduler.stop?.();
+    await this.pluginSystem.unregisterAll();
+    try {
+      await this.mcpHost?.stop();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`停止 MCP Host 失败: ${message}`);
+    } finally {
+      this.mcpHost = null;
+    }
+    if (this.started) {
+      try {
+        await this.adapter.stop();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.error(`停止 QQ Adapter 失败: ${message}`);
+      }
+    }
     this.started = false;
     this.logger.info("Bot 已停止");
   }

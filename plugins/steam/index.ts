@@ -1,9 +1,11 @@
 /** Steam 插件 —— 自包含：命令 + MCP + 监控 */
 import type { Plugin, Command, McpServer, BotContext } from "../../src/core/types.js";
+import { secureUserMappingFile } from "../../src/core/user_mapping.js";
 import { steamCommands } from "./commands.js";
 import { createSteamMcpServer } from "./mcp-server.js";
-import { apiKey } from "./shared.js";
+import { apiKey, secureExistingSteamData } from "./shared.js";
 import { initWatcher, stopWatcher } from "./watcher.js";
+import { initWeekly, stopWeekly } from "./weekly.js";
 
 export class SteamPlugin implements Plugin {
   name = "steam";
@@ -16,12 +18,16 @@ export class SteamPlugin implements Plugin {
   mcpServers: McpServer[] = [createSteamMcpServer()];
 
   async onLoad(ctx: BotContext): Promise<void> {
-    initWatcher(ctx, apiKey());
+    secureExistingSteamData();
+    secureUserMappingFile();
+    const key = apiKey();
+    initWatcher(ctx, key);
+    initWeekly(ctx, key);
   }
 
-  async onUnload(_ctx: BotContext): Promise<void> {
-    void _ctx;
+  async onUnload(ctx: BotContext): Promise<void> {
     stopWatcher();
+    await stopWeekly(ctx);
   }
 }
 

@@ -149,6 +149,7 @@ class SchedulerImpl implements SchedulerRef {
       log(`added interval job ${id} (${trigger.minutes}m)`);
     } else {
       const scheduleNext = (): void => {
+        if (!this.jobs.has(id)) return;
         try {
           const next = nextCronTime(trigger.expression, new Date());
           const delay = next.getTime() - Date.now();
@@ -163,13 +164,17 @@ class SchedulerImpl implements SchedulerRef {
           }
 
           const timer = setTimeout(() => {
-            fn().catch((e: unknown) => logErr(`job ${id}: ${e}`)).finally(scheduleNext);
+            fn().catch((e: unknown) => logErr(`job ${id}: ${e}`)).finally(() => {
+              if (this.jobs.has(id)) scheduleNext();
+            });
           }, delay);
           const entry = this.jobs.get(id);
           if (entry) entry.timer = timer;
         } catch (e: unknown) { logErr(`job ${id} schedule: ${e}`); }
       };
-      const placeholder = { timer: setTimeout(() => {}, 0), fn };
+      const placeholderTimer = setTimeout(() => {}, 0);
+      clearTimeout(placeholderTimer);
+      const placeholder = { timer: placeholderTimer, fn };
       this.jobs.set(id, placeholder);
       scheduleNext();
       log(`added cron job ${id} (${trigger.expression})`);
@@ -183,6 +188,11 @@ class SchedulerImpl implements SchedulerRef {
 
   getJob(id: string): unknown {
     return this.jobs.get(id) ?? null;
+  }
+
+  stop(): void {
+    for (const [id] of this.jobs) this.removeJob(id);
+    log("stopped");
   }
 
   // ---- Extended API ----

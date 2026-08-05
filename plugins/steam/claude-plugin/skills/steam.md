@@ -11,7 +11,7 @@
 - `steam_get_global_achievement_percentages` — 查看成就的全球稀有度，需 `app_id`
 - `steam_search_games` — 搜索游戏名获取 app_id，需 `search` 关键词
 - `steam_resolve_vanity_url` — 自定义 URL → SteamID64，需 `vanity_url`
-- `steam_publish_group_recent_ranking` — 主动向白名单 QQ 群发送最近两周游戏榜单和 AI 锐评，需 `group_id`。该工具会直接发群消息，只在用户明确要求主动发布时调用；成功后不要再用 `send_message` 重复发送。
+- `steam_publish_group_recent_ranking` — 主动向白名单 QQ 群发送最近两周玩家游戏榜单和 AI 锐评，按“某个玩家在某个游戏上的时长”排名，需 `group_id`。该工具会直接发群消息，只在用户明确要求主动发布时调用；成功后不要再用 `send_message` 重复发送。
 
 ## 用户映射
 

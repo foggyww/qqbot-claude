@@ -33,7 +33,7 @@ const TOOLS: McpToolDefinition[] = [
   { name: "steam_get_global_achievement_percentages", description: "获取成就全球完成率", inputSchema: { type: "object", properties: { app_id: { type: "integer" } }, required: ["app_id"] } },
   { name: "steam_search_games", description: "搜索 Steam 游戏", inputSchema: { type: "object", properties: { search: { type: "string" } }, required: ["search"] } },
   { name: "steam_resolve_vanity_url", description: "Vanity URL → SteamID64", inputSchema: { type: "object", properties: { vanity_url: { type: "string" } }, required: ["vanity_url"] } },
-  { name: "steam_publish_group_recent_ranking", description: "主动向白名单 QQ 群发送 Steam 最近两周游戏榜和 AI 锐评（有消息发送副作用）", inputSchema: { type: "object", properties: { group_id: { type: "integer", description: "目标白名单 QQ 群号" } }, required: ["group_id"] } },
+  { name: "steam_publish_group_recent_ranking", description: "主动向白名单 QQ 群发送 Steam 最近两周玩家游戏榜和 AI 锐评（有消息发送副作用）", inputSchema: { type: "object", properties: { group_id: { type: "integer", description: "目标白名单 QQ 群号" } }, required: ["group_id"] } },
 ];
 
 export function createSteamMcpServer(

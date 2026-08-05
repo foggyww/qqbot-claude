@@ -235,13 +235,17 @@ npm run verify
 
 > `npm run setup` 是 Docker 推荐安装入口，等价于 `npm run setup:docker`。本机部署请使用 `npm run setup:local`。
 
-### 4. 构建并运行
+### 4. 启动本机 qqbot
 
-开发模式：
+本项目当前推荐使用 Docker 运行 NapCat、本机运行 qqbot。本机 qqbot 由系统级 `qqbot.service` 管理：
 
 ```bash
-npm run dev
+sudo systemctl restart qqbot
+sudo systemctl status qqbot --no-pager
+sudo journalctl -u qqbot -f
 ```
+
+不要使用 `nohup npm run dev` 或后台 `npm run dev &` 启动常驻实例，否则可能重复连接 OneBot 或占用 MCP 端口。`npm run dev` 只用于需要直接观察终端输出的前台临时调试；调试前应先执行 `sudo systemctl stop qqbot`，完成后再执行 `sudo systemctl start qqbot`。
 
 构建后运行：
 
@@ -305,7 +309,7 @@ npm test           # Vitest 测试
 
 bot 内命令可通过 `/help` 查看。内置命令按插件集组织，包括会话、模型、权限、定时任务、root 模式等能力。
 
-Steam 插件支持 `/steam recent` 主动发布当前群绑定成员的最近两周游戏榜单，并追加 AI 锐评；Agent 也可通过 `steam_publish_group_recent_ranking` MCP 工具向白名单群主动发布。
+Steam 插件支持 `/steam recent` 主动发布当前群绑定成员的最近两周玩家游戏榜单，按“某个玩家在某个游戏上的时长”排名，并追加 AI 锐评；Agent 也可通过 `steam_publish_group_recent_ranking` MCP 工具向白名单群主动发布。
 
 ## 插件开发
 

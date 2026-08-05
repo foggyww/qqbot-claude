@@ -15,6 +15,13 @@ qqbot-ts 是一个 TypeScript Node.js QQ 机器人，把 Claude Code CLI 作为 
 - 配置: `.qqbotrc.toml`，本地私有，不提交
 - 包管理: npm
 
+### 本机服务管理
+
+- 当前开发调试方式是 Docker NapCat + 本机 qqbot。
+- 本机 qqbot 由系统级 `qqbot.service` 管理。启动、停止、重启和查看日志必须使用 `systemctl start|stop|restart|status qqbot` 与 `journalctl -u qqbot`。
+- 禁止用 `nohup npm run dev`、后台 `npm run dev &` 或其他手工常驻方式启动第二个 qqbot 实例，以免重复连接 OneBot 或占用 MCP 端口。
+- `npm run dev` 仅用于前台临时调试；由 agent 执行常驻启动或重启时必须使用 systemd。
+
 ## 3. 必读文档顺序
 
 开始非平凡修改前，必须按需阅读：

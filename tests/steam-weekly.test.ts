@@ -9,6 +9,7 @@ import {
   formatDuration,
   formatRecentReport,
   initWeekly,
+  isRecentGamesUnavailable,
   loadWeeklyRoastPrompt,
   parseRecentGames,
   parseRoastLines,
@@ -40,9 +41,9 @@ describe("Steam weekly ranking", () => {
   });
 
   it("formats Steam minute precision for display", () => {
-    expect(formatDuration(25)).toBe("25分钟");
-    expect(formatDuration(125)).toBe("2小时5分钟");
-    expect(formatDuration(120)).toBe("2小时");
+    expect(formatDuration(25)).toBe("25m");
+    expect(formatDuration(1676)).toBe("27h56m");
+    expect(formatDuration(120)).toBe("2h");
   });
 
 });
@@ -50,6 +51,7 @@ describe("Steam weekly ranking", () => {
 describe("Steam recent two-week ranking", () => {
   it("parses strict playtime_2weeks responses", () => {
     expect(parseRecentGames({ response: { total_count: 0 } })).toEqual({});
+    expect(parseRecentGames({ response: { total_count: 0, games: [] } })).toEqual({});
     expect(parseRecentGames({
       response: {
         total_count: 2,
@@ -64,9 +66,27 @@ describe("Steam recent two-week ranking", () => {
     });
     expect(parseRecentGames({ response: { total_count: 1, games: [{ appid: 10 }] } })).toBeNull();
     expect(parseRecentGames({ response: { total_count: "1", games: [] } })).toBeNull();
-    expect(parseRecentGames({ response: { total_count: 2, games: [] } })).toBeNull();
+    expect(parseRecentGames({
+      response: {
+        total_count: 2,
+        games: [{ appid: 10, name: "Game A", playtime_2weeks: 35 }],
+      },
+    })).toEqual({ "10": { name: "Game A", minutes: 35 } });
+    expect(parseRecentGames({ response: { total_count: 1, games: [] } })).toEqual({});
+    expect(parseRecentGames({
+      response: {
+        total_count: 1,
+        games: [
+          { appid: 10, playtime_2weeks: 1 },
+          { appid: 20, playtime_2weeks: 1 },
+        ],
+      },
+    })).toBeNull();
     expect(parseRecentGames({ response: { total_count: 1, games: [{ appid: 10, playtime_2weeks: -1 }] } })).toBeNull();
     expect(parseRecentGames({ response: { total_count: 1, games: [{ appid: 10, playtime_2weeks: 1.5 }] } })).toBeNull();
+    expect(isRecentGamesUnavailable({ response: {} })).toBe(true);
+    expect(isRecentGamesUnavailable({ response: { total_count: 0 } })).toBe(false);
+    expect(isRecentGamesUnavailable({ error: "Steam API HTTP 500" })).toBe(false);
   });
 
   it("waits for active publications before shutdown completes", async () => {
@@ -83,7 +103,7 @@ describe("Steam recent two-week ranking", () => {
     expect(completed).toBe(true);
   });
 
-  it("aggregates recent minutes without a weekly baseline", () => {
+  it("ranks each player's game time while merging that player's Steam accounts", () => {
     const snapshots: SteamAccountSnapshots = {
       "steam-a": { "10": { name: "Game A", minutes: 30 } },
       "steam-b": { "10": { name: "Game A", minutes: 20 } },
@@ -94,21 +114,51 @@ describe("Steam recent two-week ranking", () => {
     };
 
     expect(calculateRecentRanking(participants, snapshots)).toEqual([
-      { appId: 10, name: "Game A", minutes: 60, players: ["甲", "乙"] },
-      { appId: 20, name: "Game B", minutes: 40, players: ["乙"] },
+      { appId: 10, name: "Game A", minutes: 50, playerQq: 1, playerName: "甲" },
+      { appId: 20, name: "Game B", minutes: 40, playerQq: 2, playerName: "乙" },
+      { appId: 10, name: "Game A", minutes: 10, playerQq: 2, playerName: "乙" },
     ]);
   });
 
-  it("escapes untrusted game and player names in the report", () => {
+  it("uses QQ number and app ID as deterministic tie-breakers", () => {
+    const tiedParticipants: WeeklyParticipant[] = [
+      { qq: 2, displayName: "乙", steamIds: ["steam-b"] },
+      { qq: 1, displayName: "甲", steamIds: ["steam-a"] },
+    ];
+    const snapshots: SteamAccountSnapshots = {
+      "steam-a": {
+        "20": { name: "Game B", minutes: 30 },
+        "10": { name: "Game A", minutes: 30 },
+      },
+      "steam-b": { "5": { name: "Game C", minutes: 30 } },
+    };
+
+    expect(calculateRecentRanking(tiedParticipants, snapshots).map((entry) => [entry.playerQq, entry.appId])).toEqual([
+      [1, 10],
+      [1, 20],
+      [2, 5],
+    ]);
+  });
+
+  it("formats compact ranking rows and escapes untrusted game and player names", () => {
     const report = formatRecentReport(
       new Date("2026-07-19T12:00:00Z"),
-      [{ appId: 1, name: "[CQ:at,qq=all]", minutes: 10, players: ["[CQ:image,file=x]"] }],
+      [{ appId: 1, name: "[CQ:at,qq=all]", minutes: 1676, playerQq: 1, playerName: "[CQ:image,file=x]" }],
+      0,
       0,
       true,
     );
+    expect(report).toContain("1. &#91;CQ:image,file=x&#93;｜&#91;CQ:at,qq=all&#93;｜27h56m");
     expect(report).toContain("&#91;CQ:at,qq=all&#93;");
     expect(report).toContain("&#91;CQ:image,file=x&#93;");
     expect(report).not.toContain("[CQ:");
+  });
+
+  it("reports unavailable accounts separately from request failures", () => {
+    const report = formatRecentReport(new Date("2026-07-19T12:00:00Z"), [], 1, 2, true);
+
+    expect(report).toContain("另有 2 个 Steam 账号的游戏详情不可见，未计入本次榜单。");
+    expect(report).toContain("另有 1 个 Steam 账号数据获取失败，未计入本次榜单。");
   });
 
   it("schedules only weekly subscribers through the shared publisher", async () => {
@@ -190,6 +240,46 @@ describe("Steam recent publisher validation", () => {
       await stopWeekly(ctx);
     }
   });
+
+  it("treats a valid empty partial response as collected data", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qqbot-steam-weekly-"));
+    const mappingFile = path.join(dir, "user_mapping.json");
+    fs.writeFileSync(mappingFile, JSON.stringify({ users: { "1": { steam_id: "steam-a" } } }), "utf-8");
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      response: { total_count: 1, games: [] },
+    }), { headers: { "content-type": "application/json" } }));
+    globalThis.fetch = fetchMock as typeof fetch;
+    const sendMessage = vi.fn(async () => {});
+    const ctx = botContext({
+      adapter: {
+        ...botContext().adapter,
+        getGroupMembers: vi.fn(async () => [{ qq: 1, nick: "甲", card: "" }]),
+      },
+      sendMessage,
+    });
+    initWeekly(ctx, "test-key");
+    setMappingFile(mappingFile);
+    try {
+      await expect(publishRecentTwoWeekRanking(10)).resolves.toMatchObject({
+        ok: true,
+        failedAccountCount: 0,
+        unavailableAccountCount: 0,
+        empty: true,
+      });
+      expect(String(fetchMock.mock.calls[0]?.[0])).toContain("count=0");
+      expect(sendMessage).toHaveBeenCalledWith(
+        "group",
+        10,
+        expect.stringContaining("最近两周暂无游玩记录"),
+      );
+    } finally {
+      await stopWeekly(ctx);
+      globalThis.fetch = originalFetch;
+      setMappingFile("");
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("Steam weekly prompt", () => {
@@ -217,7 +307,7 @@ describe("Steam weekly roast delivery", () => {
       return "1. 第一刀\n- 第二刀\n第三刀\n第四刀\n第五刀\n第六刀";
     });
 
-    await expect(deliverWeeklyReport("周榜", [{ appId: 1, name: "A", minutes: 1, players: ["甲"] }], send, generate)).resolves.toBe(5);
+    await expect(deliverWeeklyReport("周榜", [{ appId: 1, name: "A", minutes: 1, playerQq: 1, playerName: "甲" }], send, generate)).resolves.toBe(5);
 
     expect(events).toEqual([
       "send:周榜",
@@ -235,7 +325,7 @@ describe("Steam weekly roast delivery", () => {
 
     await expect(deliverWeeklyReport(
       "周榜",
-      [{ appId: 1, name: "A", minutes: 1, players: ["甲"] }],
+      [{ appId: 1, name: "A", minutes: 1, playerQq: 1, playerName: "甲" }],
       send,
       async () => { throw new Error("AI unavailable"); },
     )).resolves.toBe(0);
@@ -262,7 +352,7 @@ describe("Steam weekly roast delivery", () => {
 
     await expect(deliverWeeklyReport(
       "周榜",
-      [{ appId: 1, name: "A", minutes: 1, players: ["甲"] }],
+      [{ appId: 1, name: "A", minutes: 1, playerQq: 1, playerName: "甲" }],
       send,
       async () => "第一句\n第二句\n第三句\n第四句",
     )).resolves.toBe(2);

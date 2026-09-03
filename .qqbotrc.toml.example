@@ -134,6 +134,14 @@ allowed = [
     "mcp__qqbot-steam__steam_search_games",
     "mcp__qqbot-steam__steam_resolve_vanity_url",
     "mcp__qqbot-steam__steam_publish_group_recent_ranking",
+    "mcp__qqbot-accounting__accounting_add_transaction",
+    "mcp__qqbot-accounting__accounting_list_transactions",
+    "mcp__qqbot-accounting__accounting_update_transaction",
+    "mcp__qqbot-accounting__accounting_delete_transaction",
+    "mcp__qqbot-accounting__accounting_get_balance",
+    "mcp__qqbot-accounting__accounting_set_balance",
+    "mcp__qqbot-accounting__accounting_set_virtual_balance",
+    "mcp__qqbot-accounting__accounting_calculate_daily_budget",
 ]
 
 # -------------------- Steam 定时任务（可选） --------------------

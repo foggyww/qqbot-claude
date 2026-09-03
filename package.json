@@ -14,7 +14,7 @@
     "clean": "node scripts/clean-dist.mjs",
     "build": "npm run clean && tsc && node scripts/copy-assets.mjs",
     "dev": "tsx src/core/index.ts",
-    "lint": "eslint src/",
+    "lint": "eslint src/ plugins/ tests/",
     "setup": "npm run setup:docker",
     "setup:docker": "bash scripts/setup-docker.sh",
     "setup:local": "node scripts/install.mjs",

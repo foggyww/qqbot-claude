@@ -39,12 +39,18 @@ export async function handle(
   const model = store.loadModel(sessionDir);
   const effort = store.loadEffort(sessionDir);
 
+  const rawEvent = ctx.rawEvent && typeof ctx.rawEvent === "object"
+    ? ctx.rawEvent as Record<string, unknown>
+    : {};
+  const messageId = typeof rawEvent.message_id === "number" || typeof rawEvent.message_id === "string"
+    ? String(rawEvent.message_id)
+    : "unknown";
+  msg = `${ctx.senderNick || "未知"}（qq=${ctx.senderQq || 0}，message_id=${messageId}）说：${msg}`;
+
   if (store.isRootMode(sessionDir)) {
     const sessionId = store.getSessionId(sessionDir);
     return askClaudeRoot(msg, sessionDir, sessionId, undefined, model, effort);
   }
-
-  msg = `${ctx.senderNick || "未知"}（qq=${ctx.senderQq || 0}）说：${msg}`;
 
   // Normal (non-root) mode: build system prompt
   const replyType = ctx.replyType;

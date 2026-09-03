@@ -19,7 +19,8 @@ Bot
   ├─ Claude Code Backend 调用 claude CLI
   └─ McpHost             项目内 MCP Host，随 Bot 启停
        ├─ qqbot          内置 QQ MCP server，复用当前 QQAdapter
-       └─ qqbot-steam    Steam 插件 MCP server
+       ├─ qqbot-steam    Steam 插件 MCP server
+       └─ qqbot-accounting 记账插件 MCP server
 ```
 
 核心原则：
@@ -247,6 +248,8 @@ Docker 和本机运行都读取同一份 `.qqbotrc.toml`；Docker Compose 只额
 - `runtime/data/user_mapping.json`：QQ → Steam/GitHub 等第三方账号映射
 - `runtime/data/steam_state.json`：Steam watcher 状态
 - `runtime/data/steam_subscriptions.json`：Steam 群订阅状态
+- `runtime/data/steam_settings.json`：Steam 全局实时状态通知开关
+- `runtime/data/accounting/accounts/<QQ>.json`：按 QQ 隔离的余额、虚拟余额和记账流水
 
 ## 7. 权限与会话
 

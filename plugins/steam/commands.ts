@@ -1,6 +1,11 @@
 /** Steam 插件命令: /steam subscribe|unsubscribe|status|refresh */
 import type { Command, MessageContext } from "../../src/core/types.js";
-import { loadSteamSubscriptions, saveSteamSubscriptions } from "./shared.js";
+import {
+  areSteamNotificationsEnabled,
+  loadSteamSubscriptions,
+  saveSteamSubscriptions,
+  setSteamNotificationsEnabled,
+} from "./shared.js";
 import { publishRecentTwoWeekRanking } from "./weekly.js";
 import { forceRefresh, restartOrStop } from "./watcher.js";
 
@@ -59,10 +64,37 @@ export async function handleSteamCommand(
     if (result.ok) return;
     return `生成 Steam 最近两周榜失败：${result.error ?? "未知错误"}`;
   }
-  return "用法: /steam subscribe | unsubscribe | status | refresh | weekly subscribe | weekly unsubscribe | weekly status | recent";
+  return "用法: /steam subscribe | unsubscribe | status | refresh | weekly subscribe | weekly unsubscribe | weekly status | recent\n管理员: /steam notify on | off | status";
+}
+
+export async function handleSteamNotifyCommand(
+  msg: string,
+  setEnabled = setSteamNotificationsEnabled,
+  getEnabled = areSteamNotificationsEnabled,
+): Promise<string> {
+  const sub = msg.trim().toLowerCase();
+  if (sub === "on" || sub === "enable") {
+    setEnabled(true);
+    return "已开启全部 Steam 上下线及游戏状态通知";
+  }
+  if (sub === "off" || sub === "disable") {
+    setEnabled(false);
+    return "已关闭全部 Steam 上下线及游戏状态通知";
+  }
+  if (sub === "status" || sub === "") {
+    return `Steam 上下线及游戏状态通知: ${getEnabled() ? "已开启" : "已关闭"}`;
+  }
+  return "用法: /steam notify on | off | status";
 }
 
 export const steamCommands: Command[] = [
+  {
+    name: "steam-notify",
+    description: "全局开启或关闭 Steam 上下线及游戏状态通知",
+    prefix: "/steam notify",
+    minLevel: 3,
+    handler: (msg) => handleSteamNotifyCommand(msg),
+  },
   {
     name: "steam",
     description: "Steam 状态监控与游戏周榜订阅",

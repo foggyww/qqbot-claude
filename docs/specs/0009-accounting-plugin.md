@@ -1,0 +1,78 @@
+# Spec 0009: Accounting Plugin
+
+## Status
+
+Accepted
+
+## Scope
+
+QQ 自然语言记账、余额、虚拟余额、历史流水编辑和日预算。主要涉及 `plugins/accounting/`、插件 MCP、Claude Code skill 和 `runtime/data/accounting/`。
+
+## Goals
+
+- 每个发送者 QQ 使用独立账本。
+- AI 只解析自然语言，MCP 工具负责校验、持久化和计算。
+- 收入、支出、余额和预算结果不依赖聊天上下文推算。
+- 历史记录可以查询、修改和删除。
+
+## Rules
+
+- 账户键是正整数 QQ 号；私聊和群聊中的同一 QQ 共用一本账。
+- 金额内部使用整数分，不使用浮点数保存账本金额。
+- 收入和支出金额必须大于零，内容保存用户原话。
+- 当前余额可直接设置；收入增加余额，支出减少余额。
+- 虚拟余额独立手动设置，普通收入和支出不改变虚拟余额。
+- 修改历史记录时，当前余额按新旧记录差额同步修正。
+- 删除历史记录时，当前余额撤销该记录对余额的影响。
+- 修改或删除必须使用记录 ID；自然语言指向不唯一时应先查询候选记录。
+- 单日预算可使用当前余额或虚拟余额，并支持日、月、年为周期单位。
+- 月和年按 Asia/Shanghai 日历计算实际天数，不把月或年换算成固定天数。
+- 账本数据只能写入 `runtime/data/accounting/`，不得读取或回退到旧 `data/`。
+
+## Data
+
+- 每个 QQ 使用一个 JSON 文件，余额和流水在一次原子替换中提交。
+- 数据目录权限应为 `0700`，文件权限应为 `0600`。
+- 同一 QQ 的写操作必须串行，避免并发记账丢失更新。
+- 新增流水使用 QQ `message_id` 派生的 `source_id` 作为幂等键；同一消息的重复执行返回已有流水，不得再次修改余额。一个消息包含多笔流水时使用稳定序号区分。
+- 同一账户复用 `source_id` 但金额、方向、内容或显式发生时间不同，应返回冲突错误，不能静默覆盖或新增。
+- 数据损坏应返回明确错误，不能静默重置账本。
+
+## MCP
+
+插件 server name 为 `qqbot-accounting`，提供：
+
+- `accounting_add_transaction`
+- `accounting_list_transactions`
+- `accounting_update_transaction`
+- `accounting_delete_transaction`
+- `accounting_get_balance`
+- `accounting_set_balance`
+- `accounting_set_virtual_balance`
+- `accounting_calculate_daily_budget`
+
+当前 MCP 调用上下文不携带可信发送者身份，因此工具显式接收 `owner_qq`。项目中的机器人用户均视为可信用户，不额外限制群聊查询或跨账户参数。
+
+## Error Handling
+
+- 非法 QQ、金额、日期、方向、周期和记录 ID返回结构化错误。
+- 未找到记录与记录参数不完整应返回明确错误。
+- 文件 IO 和数据解析错误不得泄漏内部堆栈或私有配置。
+
+## Tests
+
+- 金额解析和精度。
+- 收入、支出、余额和虚拟余额。
+- 按 QQ 隔离和历史筛选。
+- 修改、删除和并发写入。
+- 同一 `source_id` 的串行及并发重试只产生一笔流水，不同 `source_id` 仍可记录内容相同的独立流水。
+- 日、月、年预算天数。
+- runtime 路径和文件权限。
+
+## Acceptance Checklist
+
+- [ ] 自然语言可通过 Claude skill 调用确定性 MCP 工具。
+- [ ] 同一 QQ 的余额与流水原子更新。
+- [ ] 修改和删除历史记录会正确修正余额。
+- [ ] 当前余额与虚拟余额相互独立。
+- [ ] 构建产物包含 accounting Claude plugin assets。

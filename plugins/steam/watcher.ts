@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import type { BotContext } from "../../src/core/types.js";
 import { getUserMapping } from "../../src/core/user_mapping.js";
 import {
+  areSteamNotificationsEnabled,
   escapeOneBotText,
   fetchSteam,
   isSteamApiError,
@@ -57,6 +58,16 @@ export function formatWatcherChanges(previous: WatcherGroupState, current: Watch
     }
   }
   return changes;
+}
+
+export function buildWatcherNotification(
+  previous: WatcherGroupState,
+  current: WatcherGroupState,
+  notificationsEnabled: boolean,
+): string | null {
+  if (!notificationsEnabled) return null;
+  const changes = formatWatcherChanges(previous, current);
+  return changes.length ? "Steam 状态变更：\n" + changes.join("\n") : null;
 }
 
 export function preserveWatcherGroupState(
@@ -174,9 +185,11 @@ async function doTick(): Promise<void> {
   if (_firstRun) { _firstRun = false; return; }
 
   for (const gid of activeGroups) {
-    const changes = formatWatcherChanges(oldState[String(gid)] ?? {}, newState[String(gid)] ?? {});
-    if (changes.length) {
-      await _ctx.sendMessage("group", gid, "Steam 状态变更：\n" + changes.join("\n"));
-    }
+    const notification = buildWatcherNotification(
+      oldState[String(gid)] ?? {},
+      newState[String(gid)] ?? {},
+      areSteamNotificationsEnabled(),
+    );
+    if (notification) await _ctx.sendMessage("group", gid, notification);
   }
 }

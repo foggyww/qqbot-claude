@@ -5,18 +5,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fetchSteam,
   fetchSteamStoreSearch,
+  STEAM_SETTINGS_FILE,
   STEAM_STATE_FILE,
   STEAM_SUBS_FILE,
   parseSteamSubscriptions,
+  parseSteamSettings,
+  areSteamNotificationsEnabled,
   sanitizeExternalText,
   secureExistingSteamData,
   steamIdsFromMapping,
+  setSteamNotificationsEnabled,
   writeSecureJson,
 } from "../plugins/steam/shared.js";
 import { getUserMapping, secureUserMappingFile, setMappingFile, setUserField } from "../src/core/user_mapping.js";
-import { formatWatcherChanges, parseWatcherPlayers, preserveWatcherGroupState } from "../plugins/steam/watcher.js";
+import {
+  buildWatcherNotification,
+  formatWatcherChanges,
+  parseWatcherPlayers,
+  preserveWatcherGroupState,
+} from "../plugins/steam/watcher.js";
 import { createSteamMcpServer } from "../plugins/steam/mcp-server.js";
-import { handleSteamCommand } from "../plugins/steam/commands.js";
+import { handleSteamCommand, handleSteamNotifyCommand, steamCommands } from "../plugins/steam/commands.js";
 import type { MessageContext } from "../src/core/types.js";
 
 let originalFetch: typeof globalThis.fetch;
@@ -59,6 +68,7 @@ describe("Steam shared helpers", () => {
   it("keeps Steam plugin state under runtime/data", () => {
     expect(STEAM_SUBS_FILE).toContain(path.join("runtime", "data", "steam_subscriptions.json"));
     expect(STEAM_STATE_FILE).toContain(path.join("runtime", "data", "steam_state.json"));
+    expect(STEAM_SETTINGS_FILE).toContain(path.join("runtime", "data", "steam_settings.json"));
     expect(path.basename(path.dirname(STEAM_SUBS_FILE))).toBe("data");
     expect(path.basename(path.dirname(path.dirname(STEAM_SUBS_FILE)))).toBe("runtime");
   });
@@ -73,6 +83,18 @@ describe("Steam shared helpers", () => {
       "123": { status: true, weekly: false },
       "456": { status: false, weekly: true },
     });
+  });
+
+  it("defaults realtime notifications to enabled and persists the global switch", () => {
+    const file = path.join(tempRoot, "runtime", "data", "steam_settings.json");
+    expect(parseSteamSettings(null)).toEqual({ notificationsEnabled: true });
+    expect(parseSteamSettings({ notificationsEnabled: false })).toEqual({ notificationsEnabled: false });
+    expect(areSteamNotificationsEnabled(file)).toBe(true);
+
+    setSteamNotificationsEnabled(false, file);
+
+    expect(areSteamNotificationsEnabled(file)).toBe(false);
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
   });
 
   it("writes private runtime JSON and redacts external error summaries", () => {
@@ -212,6 +234,14 @@ describe("Steam watcher message safety", () => {
     expect(preserveWatcherGroupState(previous, {})).toEqual({});
   });
 
+  it("skips a pending state notification while the global switch is off", () => {
+    const previous = { "1": { name: "player", online: false, game: "" } };
+    const current = { "1": { name: "player", online: true, game: "Game" } };
+
+    expect(buildWatcherNotification(previous, current, false)).toBeNull();
+    expect(buildWatcherNotification(previous, current, true)).toContain("player 上线了 在玩 Game");
+  });
+
   it("rejects malformed player JSON instead of clearing group state", () => {
     expect(parseWatcherPlayers({ response: {} })).toBeNull();
     expect(parseWatcherPlayers({ response: { players: [{ steamid: "1", personaname: "name" }] } })).toBeNull();
@@ -280,5 +310,30 @@ describe("Steam recent ranking entry points", () => {
       leaderboardSent: false,
       roastSentCount: 0,
     });
+  });
+});
+
+describe("Steam global realtime notification command", () => {
+  it("is registered as a level 3 subcommand so the router enforces administrator access", () => {
+    expect(steamCommands.find((command) => command.prefix === "/steam notify")).toMatchObject({ minLevel: 3 });
+    expect(steamCommands.find((command) => command.prefix === "/steam")).toMatchObject({ minLevel: 2 });
+  });
+
+  it("toggles all realtime notifications without requiring a group context", async () => {
+    let enabled = true;
+    const setEnabled = vi.fn((value: boolean) => { enabled = value; });
+    const getEnabled = vi.fn(() => enabled);
+
+    await expect(handleSteamNotifyCommand("off", setEnabled, getEnabled)).resolves.toBe(
+      "已关闭全部 Steam 上下线及游戏状态通知",
+    );
+    await expect(handleSteamNotifyCommand("status", setEnabled, getEnabled)).resolves.toBe(
+      "Steam 上下线及游戏状态通知: 已关闭",
+    );
+    await expect(handleSteamNotifyCommand("on", setEnabled, getEnabled)).resolves.toBe(
+      "已开启全部 Steam 上下线及游戏状态通知",
+    );
+    expect(setEnabled).toHaveBeenNthCalledWith(1, false);
+    expect(setEnabled).toHaveBeenNthCalledWith(2, true);
   });
 });

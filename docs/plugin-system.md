@@ -259,6 +259,8 @@ PluginSystem 会把它解析成绝对路径，保存到 `ccPluginDirs`。之后 
 
 Steam 的 `skills/steam.md` 会让 Claude Code 知道 Steam MCP 工具的使用方式；`hooks/hooks.json` 当前为空。
 
+记账插件采用同样的组合方式：`plugins/accounting/` 提供 `/账本` 命令和 `qqbot-accounting` MCP server，`claude-plugin/skills/accounting.md` 负责把自然语言转换为确定性的账本工具调用。数据按发送者 QQ 隔离并保存在 `runtime/data/accounting/`。
+
 ## 11. Steam 插件流程
 
 启动时：

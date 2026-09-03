@@ -27,6 +27,7 @@ Steam 插件命令、Steam MCP server、Steam watcher、QQ 到 Steam ID 映射�
 - 榜单必须按群隔离，不能把其他群成员数据用于当前群。
 - Steam 私有 Prompt 必须从 `plugins/steam/prompts/*.md` 读取并支持热更新，不能占用核心 Prompt 命名空间。
 - 定时、命令和 MCP 最近两周榜必须复用同一个发布能力，不保存或推进本地游玩时长基线。
+- Steam 实时状态通知有一个全局开关，持久化在 `runtime/data/steam_settings.json`，缺失或损坏时安全回退为开启。
 
 ## Behavior
 
@@ -34,6 +35,8 @@ Steam 插件命令、Steam MCP server、Steam watcher、QQ 到 Steam ID 映射�
 - MCP 工具根据 QQ 或 Steam ID 查询玩家资料、好友等数据。
 - 非 JSON 响应、HTTP 非 2xx、JSON parse 失败都应返回结构化错误。
 - `/steam weekly subscribe` 开启本群每周日自动发送最近两周榜单。
+- `/steam notify on|off|status` 查询或切换全局实时状态通知，命令等级必须为 level 3；开关不区分群，也不影响周榜和主动最近两周榜。
+- 全局实时通知关闭时，watcher 仍轮询并刷新 `steam_state.json` 基线，但在每次准备发送上下线、开始游戏或退出游戏通知时跳过发送，重新开启后不得补发停用期间的旧变化。
 - 同一 QQ 的多个 Steam ID 合并；同一群内跨 QQ 重复绑定的 Steam ID 仅确定性归属 QQ 号最小的成员，不重复计时。
 - 每个 QQ 成员和每个游戏构成独立排名项；同一 QQ 的多个 Steam ID 在相同游戏上的时长合并，不同 QQ 玩同一游戏时不得互相累加。
 - 所有玩家游戏排名项按分钟数全局降序排列，每行使用 `1. 玩家｜游戏｜27h56m` 格式展示名次、玩家群名片或昵称、游戏和时长。
@@ -77,9 +80,11 @@ Steam 插件命令、Steam MCP server、Steam watcher、QQ 到 Steam ID 映射�
 - 部分 API 失败、同群并发触发阻止和空榜单。
 - 榜单与 AI 短评发送顺序、短评数量限制及 AI 失败降级。
 - `playtime_2weeks` 解析、主动榜单聚合、白名单校验和并发阻止。
+- 全局实时通知开关的默认值、持久化、level 3 命令声明，以及关闭时只跳过发送而继续推进状态基线。
 
 ## Acceptance Checklist
 
 - [ ] user mapping 路径仍是 `runtime/data/user_mapping.json`。
 - [ ] Steam API key 不泄漏。
 - [ ] 第三方 API 错误结构化返回。
+- [ ] 只有 level 3 管理员可切换 Steam 全局实时通知。

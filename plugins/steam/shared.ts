@@ -9,6 +9,11 @@ const STORE_SEARCH = "https://store.steampowered.com/api/storesearch";
 export const STEAM_DATA_DIR = path.join(process.cwd(), "runtime", "data");
 export const STEAM_SUBS_FILE = path.join(STEAM_DATA_DIR, "steam_subscriptions.json");
 export const STEAM_STATE_FILE = path.join(STEAM_DATA_DIR, "steam_state.json");
+export const STEAM_SETTINGS_FILE = path.join(STEAM_DATA_DIR, "steam_settings.json");
+
+export interface SteamSettings {
+  notificationsEnabled: boolean;
+}
 
 export function ensureSteamDataDir(): void {
   fs.mkdirSync(STEAM_DATA_DIR, { recursive: true, mode: 0o700 });
@@ -18,7 +23,7 @@ export function ensureSteamDataDir(): void {
 export function secureExistingSteamData(dataDir = STEAM_DATA_DIR): void {
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   fs.chmodSync(dataDir, 0o700);
-  for (const name of ["steam_subscriptions.json", "steam_state.json"]) {
+  for (const name of ["steam_subscriptions.json", "steam_state.json", "steam_settings.json"]) {
     const file = path.join(dataDir, name);
     if (fs.existsSync(file)) fs.chmodSync(file, 0o600);
   }
@@ -121,6 +126,33 @@ export function loadSteamSubscriptions(): SteamSubscriptionMap {
 
 export function saveSteamSubscriptions(subscriptions: SteamSubscriptionMap): void {
   writeSecureJson(STEAM_SUBS_FILE, subscriptions);
+}
+
+export function parseSteamSettings(value: unknown): SteamSettings {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { notificationsEnabled: true };
+  }
+  return {
+    notificationsEnabled: (value as Record<string, unknown>).notificationsEnabled !== false,
+  };
+}
+
+export function loadSteamSettings(file = STEAM_SETTINGS_FILE): SteamSettings {
+  try {
+    return parseSteamSettings(JSON.parse(fs.readFileSync(file, "utf-8")) as unknown);
+  } catch {
+    return { notificationsEnabled: true };
+  }
+}
+
+export function setSteamNotificationsEnabled(enabled: boolean, file = STEAM_SETTINGS_FILE): void {
+  const settings = loadSteamSettings(file);
+  settings.notificationsEnabled = enabled;
+  writeSecureJson(file, settings);
+}
+
+export function areSteamNotificationsEnabled(file = STEAM_SETTINGS_FILE): boolean {
+  return loadSteamSettings(file).notificationsEnabled;
 }
 
 export async function fetchSteam(pathname: string, keyOverride?: string): Promise<unknown> {

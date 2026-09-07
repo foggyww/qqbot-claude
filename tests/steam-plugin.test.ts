@@ -23,6 +23,9 @@ import {
   formatWatcherChanges,
   parseWatcherPlayers,
   preserveWatcherGroupState,
+  runManualWatcherRefresh,
+  runWatcherTickSafely,
+  sendWatcherNotifications,
 } from "../plugins/steam/watcher.js";
 import { createSteamMcpServer } from "../plugins/steam/mcp-server.js";
 import { handleSteamCommand, handleSteamNotifyCommand, steamCommands } from "../plugins/steam/commands.js";
@@ -248,6 +251,48 @@ describe("Steam watcher message safety", () => {
     expect(parseWatcherPlayers({
       response: { players: [{ steamid: "1", personaname: "name", personastate: 1, gameextrainfo: "game" }] },
     })).toEqual({ "1": { name: "name", online: true, game: "game" } });
+  });
+
+  it("continues notifying other groups when one group send fails", async () => {
+    const offline = { "1": { name: "player", online: false, game: "" } };
+    const online = { "1": { name: "player", online: true, game: "Game" } };
+    const sendMessage = vi.fn(async (_type: "private" | "group", groupId: number) => {
+      if (groupId === 100) throw new Error("OneBot retcode=1200");
+    });
+    const warn = vi.fn();
+
+    await expect(sendWatcherNotifications(
+      [100, 200],
+      { "100": offline, "200": offline },
+      { "100": online, "200": online },
+      true,
+      sendMessage,
+      warn,
+    )).resolves.toBe(1);
+
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(sendMessage).toHaveBeenNthCalledWith(2, "group", 200, expect.stringContaining("player 上线了"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("群 100 通知发送失败: OneBot retcode=1200"));
+  });
+
+  it("contains rejected periodic ticks even when logging also fails", async () => {
+    const runTick = vi.fn(async () => { throw new Error("state write failed"); });
+    const warn = vi.fn(() => { throw new Error("logger failed"); });
+
+    await expect(runWatcherTickSafely(runTick, warn)).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith("Steam watcher 定时刷新失败: state write failed");
+  });
+
+  it("returns diagnostic results for manual refresh failures", async () => {
+    const warn = vi.fn();
+
+    await expect(runManualWatcherRefresh(async () => 2, warn)).resolves.toBe(
+      "Steam watcher 刷新完成，但 2 个群通知发送失败，请检查日志",
+    );
+    await expect(runManualWatcherRefresh(async () => {
+      throw new Error("token=secret-value state write failed");
+    }, warn)).resolves.toBe("Steam watcher 刷新失败: token=[redacted] state write failed");
+    expect(warn).toHaveBeenCalledWith("Steam watcher 手动刷新失败: token=[redacted] state write failed");
   });
 });
 

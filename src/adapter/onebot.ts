@@ -162,6 +162,16 @@ interface PendingCall {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/** Format a failed OneBot response without dropping adapter-specific details. */
+export function formatOneBotApiError(response: Record<string, unknown>): string {
+  const retcode = String(response.retcode ?? "unknown");
+  const details = [response.msg, response.wording, response.message]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .map((value) => value.trim())
+    .filter((value, index, values) => values.indexOf(value) === index);
+  return `OneBot API error: retcode=${retcode}${details.length > 0 ? `: ${details.join("; ")}` : ""}`;
+}
+
 // ---------------------------------------------------------------------------
 // OneBotAdapter
 // ---------------------------------------------------------------------------
@@ -415,8 +425,7 @@ export class OneBotAdapter implements QQAdapter {
       if (parsed.status === "ok" || parsed.retcode === 0) {
         pc.resolve(parsed.data);
       } else {
-        const errMsg = typeof parsed.msg === "string" ? parsed.msg : `retcode=${parsed.retcode}`;
-        pc.reject(new Error(`OneBot API error: ${errMsg}`));
+        pc.reject(new Error(formatOneBotApiError(parsed)));
       }
       return;
     }

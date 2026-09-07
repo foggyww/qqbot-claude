@@ -37,6 +37,8 @@ Steam 插件命令、Steam MCP server、Steam watcher、QQ 到 Steam ID 映射�
 - `/steam weekly subscribe` 开启本群每周日自动发送最近两周榜单。
 - `/steam notify on|off|status` 查询或切换全局实时状态通知，命令等级必须为 level 3；开关不区分群，也不影响周榜和主动最近两周榜。
 - 全局实时通知关闭时，watcher 仍轮询并刷新 `steam_state.json` 基线，但在每次准备发送上下线、开始游戏或退出游戏通知时跳过发送，重新开启后不得补发停用期间的旧变化。
+- watcher 向某个群发送实时通知失败时必须记录失败并继续处理其他群，不能让单群 OneBot 故障中断本轮通知。
+- watcher 的周期 tick 必须在定时入口收敛所有异常，不能产生导致主进程退出的未处理 Promise rejection；手动 `/steam refresh` 遇到未预期异常或群通知发送失败时必须返回可诊断的失败文本。
 - 同一 QQ 的多个 Steam ID 合并；同一群内跨 QQ 重复绑定的 Steam ID 仅确定性归属 QQ 号最小的成员，不重复计时。
 - 每个 QQ 成员和每个游戏构成独立排名项；同一 QQ 的多个 Steam ID 在相同游戏上的时长合并，不同 QQ 玩同一游戏时不得互相累加。
 - 所有玩家游戏排名项按分钟数全局降序排列，每行使用 `1. 玩家｜游戏｜27h56m` 格式展示名次、玩家群名片或昵称、游戏和时长。
@@ -81,6 +83,7 @@ Steam 插件命令、Steam MCP server、Steam watcher、QQ 到 Steam ID 映射�
 - 榜单与 AI 短评发送顺序、短评数量限制及 AI 失败降级。
 - `playtime_2weeks` 解析、主动榜单聚合、白名单校验和并发阻止。
 - 全局实时通知开关的默认值、持久化、level 3 命令声明，以及关闭时只跳过发送而继续推进状态基线。
+- 单群通知发送失败不阻断其他群，周期 tick 的 rejection 不向进程冒泡。
 
 ## Acceptance Checklist
 

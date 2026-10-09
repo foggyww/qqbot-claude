@@ -31,8 +31,17 @@ interface AccountData {
   virtualBalanceCents: number;
   transactions: StoredTransaction[];
   balanceAdjustments: BalanceAdjustment[];
+  operations: StoredOperation[];
   createdAt: string;
   updatedAt: string;
+}
+
+interface StoredOperation {
+  sourceId: string;
+  kind: string;
+  payload: string | null;
+  result: Record<string, unknown>;
+  legacy?: boolean;
 }
 
 export interface TransactionInput {
@@ -65,8 +74,8 @@ export interface BudgetOptions {
 }
 
 export class AccountingError extends Error {
-  constructor(public readonly code: string, message: string) {
-    super(message);
+  constructor(public readonly code: string, message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "AccountingError";
   }
 }
@@ -76,19 +85,24 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_LIMIT = 200;
 const MAX_PERIOD_COUNT = 36_500;
 
+function safeIoCode(error: unknown): string {
+  return error && typeof error === "object" && "code" in error ? String(error.code) : "IO_ERROR";
+}
+
 export function parseMoney(value: unknown, options: { allowNegative?: boolean } = {}): number {
   const text = typeof value === "number" ? String(value) : typeof value === "string" ? value.trim() : "";
-  if (!MONEY_PATTERN.test(text)) {
+  if (text.length > 100 || !MONEY_PATTERN.test(text)) {
     throw new AccountingError("INVALID_AMOUNT", "金额必须是最多两位小数的普通数字");
   }
   const negative = text.startsWith("-");
   const unsigned = negative ? text.slice(1) : text;
   const [whole, fraction = ""] = unsigned.split(".");
-  const cents = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
-  const signedCents = negative ? -cents : cents;
-  if (!Number.isSafeInteger(signedCents)) {
+  const cents = BigInt(whole!) * 100n + BigInt(fraction.padEnd(2, "0"));
+  const signed = negative ? -cents : cents;
+  if (signed > BigInt(Number.MAX_SAFE_INTEGER) || signed < BigInt(Number.MIN_SAFE_INTEGER)) {
     throw new AccountingError("INVALID_AMOUNT", "金额超出安全范围");
   }
+  const signedCents = Number(signed);
   if (!options.allowNegative && signedCents < 0) {
     throw new AccountingError("INVALID_AMOUNT", "金额不能为负数");
   }
@@ -146,7 +160,7 @@ function parseDateOnly(value: string, field: string): Date {
   return date;
 }
 
-function shanghaiDate(date = new Date()): string {
+export function shanghaiDate(date = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Shanghai",
     year: "numeric",
@@ -156,16 +170,19 @@ function shanghaiDate(date = new Date()): string {
 }
 
 function normalizeOccurredAt(value?: string): string {
-  if (value === undefined || value === "") return new Date().toISOString();
+  if (value === undefined) return new Date().toISOString();
+  if (typeof value !== "string") throw new AccountingError("INVALID_DATE", "occurred_at 必须是 ISO 日期或时间");
   if (DATE_PATTERN.test(value)) {
     parseDateOnly(value, "occurred_at");
-    return `${value}T00:00:00+08:00`;
+    return new Date(`${value}T00:00:00+08:00`).toISOString();
   }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    throw new AccountingError("INVALID_DATE", "occurred_at 必须是有效 ISO 日期或时间");
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(Z|[+-](\d{2}):(\d{2}))$/.exec(value);
+  if (!match || Number(match[2]) > 23 || Number(match[3]) > 59 || Number(match[4]) > 59 ||
+    (match[6] !== undefined && (Number(match[6]) > 14 || Number(match[7]) > 59 || (Number(match[6]) === 14 && Number(match[7]) !== 0)))) {
+    throw new AccountingError("INVALID_DATE", "occurred_at 必须是带时区的有效完整 ISO 时间");
   }
-  return value;
+  parseDateOnly(match[1]!, "occurred_at");
+  return new Date(value).toISOString();
 }
 
 function isValidTimestamp(value: unknown): value is string {
@@ -206,9 +223,91 @@ function publicTransaction(transaction: StoredTransaction) {
     delta: formatCents(deltaCents(transaction.direction, transaction.amountCents)),
     content: transaction.content,
     occurredAt: transaction.occurredAt,
+    occurredDate: transactionDay(transaction),
     createdAt: transaction.createdAt,
     updatedAt: transaction.updatedAt,
   };
+}
+
+function receiptRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid receipt object");
+  return value as Record<string, unknown>;
+}
+
+function receiptMoney(value: unknown): number {
+  const cents = parseMoney(value, { allowNegative: true });
+  if (typeof value !== "string" || formatCents(cents) !== value) throw new Error("noncanonical receipt money");
+  return cents;
+}
+
+function receiptTimestamp(value: unknown): string {
+  if (typeof value !== "string" || DATE_PATTERN.test(value)) throw new Error("invalid receipt timestamp");
+  return normalizeOccurredAt(value);
+}
+
+function receiptKeys(value: Record<string, unknown>, required: string[], optional: string[] = []): void {
+  if (required.some((key) => !(key in value)) || Object.keys(value).some((key) => !required.includes(key) && !optional.includes(key))) {
+    throw new Error("invalid receipt fields");
+  }
+}
+
+function assertStoredOperation(operation: StoredOperation, ownerQq: number): void {
+  try {
+    if (operation.legacy !== undefined && operation.legacy !== true) throw new Error("invalid legacy marker");
+    if (operation.legacy === true && operation.kind !== "add") throw new Error("invalid legacy kind");
+    const result = receiptRecord(operation.result);
+    if (result.deduplicated !== undefined && result.deduplicated !== false) throw new Error("invalid original result");
+    if (operation.kind === "set_virtual") {
+      receiptKeys(result, ["ok", "ownerQq", "virtualBalance"]);
+      if (result.ownerQq !== ownerQq) throw new Error("receipt owner mismatch");
+      const payload = receiptRecord(JSON.parse(operation.payload!));
+      receiptKeys(payload, ["virtualBalanceCents"]);
+      if (!Number.isSafeInteger(payload.virtualBalanceCents) || payload.virtualBalanceCents !== receiptMoney(result.virtualBalance)) throw new Error("virtual receipt mismatch");
+      return;
+    }
+    receiptMoney(result.currentBalance);
+    if (operation.kind === "set_balance") {
+      receiptKeys(result, ["ok", "ownerQq", "previousBalance", "currentBalance"]);
+      if (result.ownerQq !== ownerQq) throw new Error("receipt owner mismatch");
+      receiptMoney(result.previousBalance);
+      const payload = receiptRecord(JSON.parse(operation.payload!));
+      receiptKeys(payload, ["newBalanceCents"]);
+      if (!Number.isSafeInteger(payload.newBalanceCents) || payload.newBalanceCents !== receiptMoney(result.currentBalance)) throw new Error("balance receipt mismatch");
+      return;
+    }
+    const snapshotKey = operation.kind === "delete" ? "deletedTransaction" : "transaction";
+    receiptKeys(result, ["ok", snapshotKey, "currentBalance"], operation.kind === "add" ? ["deduplicated"] : []);
+    const snapshot = receiptRecord(result[snapshotKey]);
+    receiptKeys(snapshot, ["id", "direction", "amount", "delta", "content", "occurredAt", "occurredDate", "createdAt", "updatedAt"]);
+    if (typeof snapshot.id !== "string" || !snapshot.id.trim()) throw new Error("invalid snapshot id");
+    validateDirection(snapshot.direction);
+    const cents = receiptMoney(snapshot.amount);
+    if (cents <= 0 || receiptMoney(snapshot.delta) !== deltaCents(snapshot.direction, cents)) throw new Error("snapshot amount mismatch");
+    if (normalizeContent(snapshot.content) !== snapshot.content) throw new Error("invalid snapshot content");
+    const occurredAt = receiptTimestamp(snapshot.occurredAt);
+    receiptTimestamp(snapshot.createdAt);
+    receiptTimestamp(snapshot.updatedAt);
+    if (snapshot.occurredDate !== shanghaiDate(new Date(occurredAt))) throw new Error("snapshot date mismatch");
+    if (operation.payload === null) return; // Unknown original parameters for already-edited legacy entries.
+    const payload = receiptRecord(JSON.parse(operation.payload));
+    if (operation.kind === "delete") {
+      receiptKeys(payload, ["transactionId"]);
+      if (payload.transactionId !== snapshot.id) throw new Error("delete receipt mismatch");
+    } else if (operation.kind === "update") {
+      receiptKeys(payload, ["transactionId"], ["amountCents", "direction", "content", "occurredAt"]);
+      if (payload.transactionId !== snapshot.id || Object.keys(payload).length < 2) throw new Error("update receipt mismatch");
+      if ("amountCents" in payload && (!Number.isSafeInteger(payload.amountCents) || payload.amountCents !== cents)) throw new Error("update amount mismatch");
+      if ("direction" in payload && payload.direction !== snapshot.direction) throw new Error("update direction mismatch");
+      if ("content" in payload && payload.content !== snapshot.content) throw new Error("update content mismatch");
+      if ("occurredAt" in payload && receiptTimestamp(payload.occurredAt) !== occurredAt) throw new Error("update date mismatch");
+    } else {
+      receiptKeys(payload, ["amountCents", "direction", "content", "occurredAt"]);
+      if (!Number.isSafeInteger(payload.amountCents) || payload.amountCents !== cents || payload.direction !== snapshot.direction || payload.content !== snapshot.content ||
+        (payload.occurredAt !== null && receiptTimestamp(payload.occurredAt) !== occurredAt)) throw new Error("add receipt mismatch");
+    }
+  } catch {
+    throw new AccountingError("DATA_CORRUPTED", "账本操作凭据或结果损坏");
+  }
 }
 
 function assertAccountData(value: unknown, ownerQq: number): AccountData {
@@ -232,11 +331,11 @@ function assertAccountData(value: unknown, ownerQq: number): AccountData {
     if (
       !transaction ||
       typeof transaction.id !== "string" ||
-      (transaction.sourceId !== undefined && (typeof transaction.sourceId !== "string" || transaction.sourceId === "")) ||
+      (transaction.sourceId !== undefined && (typeof transaction.sourceId !== "string" || !transaction.sourceId.trim() || transaction.sourceId.length > 200)) ||
       (transaction.direction !== "income" && transaction.direction !== "expense") ||
       !Number.isSafeInteger(transaction.amountCents) ||
       transaction.amountCents <= 0 ||
-      typeof transaction.content !== "string" ||
+      typeof transaction.content !== "string" || !transaction.content.trim() || transaction.content.length > 1000 ||
       !isValidTimestamp(transaction.occurredAt) ||
       !isValidTimestamp(transaction.createdAt) ||
       !isValidTimestamp(transaction.updatedAt)
@@ -256,6 +355,56 @@ function assertAccountData(value: unknown, ownerQq: number): AccountData {
       throw new AccountingError("DATA_CORRUPTED", "账本余额调整记录格式损坏");
     }
   }
+  if (data.operations !== undefined && !Array.isArray(data.operations)) {
+    throw new AccountingError("DATA_CORRUPTED", "账本操作凭据格式损坏");
+  }
+  const sourceIds = new Set<string>();
+  for (const operation of data.operations ?? []) {
+    if (!operation || typeof operation.sourceId !== "string" || !operation.sourceId.trim() || operation.sourceId.length > 200 ||
+      !["add", "update", "delete", "set_balance", "set_virtual"].includes(operation.kind) ||
+      (operation.payload !== null && typeof operation.payload !== "string") ||
+      (operation.payload === null && (operation.legacy !== true || operation.kind !== "add")) ||
+      !operation.result || typeof operation.result !== "object" || Array.isArray(operation.result) ||
+      operation.result.ok !== true || sourceIds.has(operation.sourceId)) {
+      throw new AccountingError("DATA_CORRUPTED", "账本操作凭据格式损坏");
+    }
+    assertStoredOperation(operation, ownerQq);
+    sourceIds.add(operation.sourceId);
+  }
+  data.operations ??= [];
+  const transactionIds = new Set<string>();
+  const transactionSources = new Set<string>();
+  for (const transaction of data.transactions) {
+    if (!transaction.id.trim() || transactionIds.has(transaction.id) ||
+      (transaction.sourceId !== undefined && transactionSources.has(transaction.sourceId))) {
+      throw new AccountingError("DATA_CORRUPTED", "账本流水 ID 重复或为空");
+    }
+    transactionIds.add(transaction.id);
+    if (transaction.sourceId === undefined) continue;
+    transactionSources.add(transaction.sourceId);
+    if (sourceIds.has(transaction.sourceId)) {
+      const original = data.operations.find((entry) => entry.sourceId === transaction.sourceId)!;
+      if (original.kind !== "add" || (original.result.transaction as { id: string }).id !== transaction.id) {
+        throw new AccountingError("DATA_CORRUPTED", "账本流水与新增凭据不匹配");
+      }
+      continue;
+    }
+    // Old ledgers did not preserve the original payload after editing.
+    const migrated: StoredOperation = {
+      sourceId: transaction.sourceId,
+      kind: "add",
+      legacy: true,
+      payload: transaction.createdAt === transaction.updatedAt ? JSON.stringify({
+        amountCents: transaction.amountCents,
+        direction: transaction.direction,
+        content: transaction.content,
+        occurredAt: null,
+      }) : null,
+      result: { ok: true, transaction: publicTransaction(transaction), currentBalance: formatCents(data.currentBalanceCents!) },
+    };
+    assertStoredOperation(migrated, ownerQq);
+    data.operations.push(migrated);
+  }
   return data as AccountData;
 }
 
@@ -274,26 +423,6 @@ export class AccountingLedger {
     const sourceId = normalizeSourceId(input.sourceId);
 
     return this.mutate(ownerQq, (account) => {
-      if (sourceId !== undefined) {
-        const existing = account.transactions.find((entry) => entry.sourceId === sourceId);
-        if (existing) {
-          const occurredAtConflicts = input.occurredAt !== undefined && existing.occurredAt !== occurredAt;
-          if (
-            existing.amountCents !== amountCents ||
-            existing.direction !== input.direction ||
-            existing.content !== content ||
-            occurredAtConflicts
-          ) {
-            throw new AccountingError("SOURCE_ID_CONFLICT", "同一 source_id 已用于另一笔记账记录");
-          }
-          return {
-            ok: true as const,
-            deduplicated: true,
-            transaction: publicTransaction(existing),
-            currentBalance: formatCents(account.currentBalanceCents),
-          };
-        }
-      }
       const timestamp = new Date().toISOString();
       const transaction: StoredTransaction = {
         id: randomUUID().replaceAll("-", ""),
@@ -316,10 +445,10 @@ export class AccountingLedger {
         transaction: publicTransaction(transaction),
         currentBalance: formatCents(account.currentBalanceCents),
       };
-    });
+    }, sourceId, "add", { amountCents, direction: input.direction, content, occurredAt: input.occurredAt === undefined ? null : occurredAt });
   }
 
-  async updateTransaction(ownerQq: number, transactionId: string, update: TransactionUpdate) {
+  async updateTransaction(ownerQq: number, transactionId: string, update: TransactionUpdate, sourceId?: string) {
     validateOwnerQq(ownerQq);
     if (typeof transactionId !== "string" || transactionId.trim() === "") {
       throw new AccountingError("INVALID_TRANSACTION_ID", "transaction_id 不能为空");
@@ -327,6 +456,14 @@ export class AccountingLedger {
     if (update.amount === undefined && update.direction === undefined && update.content === undefined && update.occurredAt === undefined) {
       throw new AccountingError("EMPTY_UPDATE", "至少提供一个需要修改的字段");
     }
+    const normalized = {
+      amountCents: update.amount === undefined ? undefined : parseMoney(update.amount),
+      direction: update.direction,
+      content: update.content === undefined ? undefined : normalizeContent(update.content),
+      occurredAt: update.occurredAt === undefined ? undefined : normalizeOccurredAt(update.occurredAt),
+    };
+    if (normalized.amountCents !== undefined && normalized.amountCents <= 0) throw new AccountingError("INVALID_AMOUNT", "记账金额必须大于 0");
+    if (normalized.direction !== undefined) validateDirection(normalized.direction);
 
     return this.mutate(ownerQq, (account) => {
       const transaction = account.transactions.find((entry) => entry.id === transactionId);
@@ -351,10 +488,10 @@ export class AccountingLedger {
         transaction: publicTransaction(transaction),
         currentBalance: formatCents(account.currentBalanceCents),
       };
-    });
+    }, sourceId, "update", { transactionId, ...normalized });
   }
 
-  async deleteTransaction(ownerQq: number, transactionId: string) {
+  async deleteTransaction(ownerQq: number, transactionId: string, sourceId?: string) {
     validateOwnerQq(ownerQq);
     if (typeof transactionId !== "string" || transactionId.trim() === "") {
       throw new AccountingError("INVALID_TRANSACTION_ID", "transaction_id 不能为空");
@@ -373,7 +510,7 @@ export class AccountingLedger {
         deletedTransaction: publicTransaction(transaction),
         currentBalance: formatCents(account.currentBalanceCents),
       };
-    });
+    }, sourceId, "delete", { transactionId });
   }
 
   async getBalance(ownerQq: number) {
@@ -388,7 +525,7 @@ export class AccountingLedger {
     };
   }
 
-  async setBalance(ownerQq: number, balance: unknown) {
+  async setBalance(ownerQq: number, balance: unknown, sourceId?: string) {
     validateOwnerQq(ownerQq);
     const newBalanceCents = parseMoney(balance, { allowNegative: true });
     return this.mutate(ownerQq, (account) => {
@@ -407,16 +544,16 @@ export class AccountingLedger {
         previousBalance: formatCents(previousBalanceCents),
         currentBalance: formatCents(newBalanceCents),
       };
-    });
+    }, sourceId, "set_balance", { newBalanceCents });
   }
 
-  async setVirtualBalance(ownerQq: number, balance: unknown) {
+  async setVirtualBalance(ownerQq: number, balance: unknown, sourceId?: string) {
     validateOwnerQq(ownerQq);
     const virtualBalanceCents = parseMoney(balance, { allowNegative: true });
     return this.mutate(ownerQq, (account) => {
       account.virtualBalanceCents = virtualBalanceCents;
       return { ok: true as const, ownerQq, virtualBalance: formatCents(virtualBalanceCents) };
-    });
+    }, sourceId, "set_virtual", { virtualBalanceCents });
   }
 
   async listTransactions(ownerQq: number, options: ListTransactionsOptions) {
@@ -534,6 +671,7 @@ export class AccountingLedger {
       virtualBalanceCents: 0,
       transactions: [],
       balanceAdjustments: [],
+      operations: [],
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -541,39 +679,74 @@ export class AccountingLedger {
 
   private load(ownerQq: number): AccountData {
     const file = this.accountFile(ownerQq);
-    if (!fs.existsSync(file)) return this.createAccount(ownerQq);
     try {
       return assertAccountData(JSON.parse(fs.readFileSync(file, "utf-8")) as unknown, ownerQq);
     } catch (error) {
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return this.createAccount(ownerQq);
       if (error instanceof AccountingError) throw error;
-      throw new AccountingError("DATA_CORRUPTED", "账本数据无法读取或解析");
+      throw new AccountingError(error instanceof SyntaxError ? "DATA_CORRUPTED" : "READ_FAILED", "账本数据无法读取或解析", { cause: error });
     }
   }
 
   private save(ownerQq: number, account: AccountData): void {
-    this.ensureDirectories();
     const file = this.accountFile(ownerQq);
-    const temporaryFile = `${file}.${process.pid}.${Date.now()}.tmp`;
+    const temporaryFile = `${file}.${randomUUID()}.tmp`;
     account.updatedAt = new Date().toISOString();
+    let committed = false;
+    let descriptor: number | undefined;
     try {
-      fs.writeFileSync(temporaryFile, `${JSON.stringify(account, null, 2)}\n`, { encoding: "utf-8", mode: 0o600 });
+      this.ensureDirectories();
+      descriptor = fs.openSync(temporaryFile, "wx", 0o600);
+      fs.writeFileSync(descriptor, `${JSON.stringify(account, null, 2)}\n`, "utf-8");
+      fs.fsyncSync(descriptor);
+      fs.closeSync(descriptor);
+      descriptor = undefined;
       fs.renameSync(temporaryFile, file);
-      fs.chmodSync(file, 0o600);
-    } catch {
-      throw new AccountingError("WRITE_FAILED", "账本写入失败");
+      committed = true;
+      descriptor = fs.openSync(this.accountsDir(), "r");
+      fs.fsyncSync(descriptor);
+    } catch (error) {
+      if (!committed) throw new AccountingError("WRITE_FAILED", "账本写入失败，未提交", { cause: error });
+      console.error("[accounting] write committed, directory sync failed", safeIoCode(error));
     } finally {
-      fs.rmSync(temporaryFile, { force: true });
+      if (descriptor !== undefined) {
+        try { fs.closeSync(descriptor); } catch (error) { console.error("[accounting] close failed", safeIoCode(error)); }
+      }
+      if (!committed) {
+        try { fs.rmSync(temporaryFile, { force: true }); } catch (error) { console.error("[accounting] temporary cleanup failed", safeIoCode(error)); }
+      }
     }
   }
 
-  private async mutate<T>(ownerQq: number, operation: (account: AccountData) => T): Promise<T> {
+  private async mutate<T extends Record<string, unknown>>(ownerQq: number, operation: (account: AccountData) => T,
+    sourceId?: string, kind?: string, payload?: Record<string, unknown>): Promise<T & { deduplicated: boolean }> {
+    sourceId = normalizeSourceId(sourceId);
     let result: T | undefined;
     let operationError: unknown;
     const previous = this.writes.get(ownerQq) ?? Promise.resolve();
     const current = previous.catch(() => undefined).then(() => {
       try {
         const account = this.load(ownerQq);
+        const existing = sourceId === undefined ? undefined : account.operations.find((entry) => entry.sourceId === sourceId);
+        if (existing) {
+          if (existing.payload === null) throw new AccountingError("LEGACY_SOURCE_ID_UNVERIFIABLE", "旧流水已修改，无法验证原请求；已阻止重复入账");
+          let expectedPayload = JSON.stringify(payload);
+          if (existing.legacy && kind === "add") {
+            const snapshot = existing.result.transaction as { occurredAt?: string };
+            if (payload?.occurredAt !== null && payload?.occurredAt !== normalizeOccurredAt(snapshot.occurredAt)) {
+              throw new AccountingError("SOURCE_ID_CONFLICT", "source_id 的发生时间与原记录不同");
+            }
+            expectedPayload = JSON.stringify({ ...payload, occurredAt: null });
+          }
+          if (existing.kind !== kind || existing.payload !== expectedPayload) {
+            throw new AccountingError("SOURCE_ID_CONFLICT", "同一 source_id 已用于不同记账操作或参数");
+          }
+          result = { ...existing.result, deduplicated: true, currentBalance: formatCents(account.currentBalanceCents),
+            ...(kind === "set_virtual" ? { virtualBalance: formatCents(account.virtualBalanceCents) } : {}) } as unknown as T;
+          return;
+        }
         result = operation(account);
+        if (sourceId !== undefined) account.operations.push({ sourceId, kind: kind!, payload: JSON.stringify(payload), result: structuredClone(result) });
         this.save(ownerQq, account);
       } catch (error) {
         operationError = error;
@@ -583,6 +756,6 @@ export class AccountingLedger {
     await current;
     if (this.writes.get(ownerQq) === current) this.writes.delete(ownerQq);
     if (operationError) throw operationError;
-    return result as T;
+    return { ...result!, deduplicated: sourceId !== undefined && (result as Record<string, unknown>)?.deduplicated === true };
   }
 }

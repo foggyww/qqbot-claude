@@ -58,8 +58,8 @@ loadConfig(.qqbotrc.toml) → new OneBotAdapter(config.onebot.wsUrl) → new Bot
   │
   ├─ start()
   │   ├─ adapter.onMessage(Bot.handleIncomingMessage)
-  │   ├─ adapter.start()       连接配置中的 OneBot WebSocket
-  │   └─ McpHost.start()       启动项目内 MCP HTTP JSON-RPC Host
+  │   ├─ McpHost.start()       先提供工具，避免启动期间收到消息但工具尚不可用
+  │   └─ adapter.start()       连接配置中的 OneBot WebSocket
   │
   └─ stop()
       ├─ Scheduler.stop()
@@ -69,6 +69,8 @@ loadConfig(.qqbotrc.toml) → new OneBotAdapter(config.onebot.wsUrl) → new Bot
 ```
 
 `runForever()` 注册 `SIGINT` / `SIGTERM`，收到信号后调用 `stop()` 并退出。
+
+启动中途失败会回收已创建的资源。停止时先停止调度并撤销 AI 写账上下文、终止子进程组，再停止插件、MCP 和 Adapter。消息按 QQ event 身份做有界进程内去重，同会话命令和定时对话共用串行队列；账本持久化操作凭据负责跨重启的写操作去重。
 
 ## 3. 消息处理链路
 

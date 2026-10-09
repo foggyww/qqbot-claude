@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { setMcpServerNames, writeMcpConfig } from "../src/ai/claude-code.js";
 import { isLoopbackHost, McpHost, normalizeMcpPort } from "../src/mcp/host.js";
 import type { Logger, McpServer } from "../src/core/types.js";
+import { ACCOUNTING_INVOCATION_HEADER, registerAccountingInvocation } from "../src/core/accounting-request-context.js";
 
 let originalMcpHost: string | undefined;
 let originalMcpPort: string | undefined;
@@ -78,6 +79,57 @@ describe("Claude MCP config", () => {
 });
 
 describe("McpHost", () => {
+  it("requires live QQ metadata for accounting mutations and rejects changed message ids", async () => {
+    const port = await getFreePort();
+    const handleToolCall = vi.fn(async () => ({ ok: true }));
+    const host = new McpHost([{ ...server("qqbot-accounting"), handleToolCall }], logger(), "127.0.0.1", port);
+    const invocation = registerAccountingInvocation({ senderQq: 123, messageId: "456" });
+    await host.start();
+    try {
+      const call = async (sourceId: string, id?: string) => {
+        const response = await fetch(`http://127.0.0.1:${port}/mcp/qqbot-accounting`, {
+          method: "POST",
+          headers: id ? { [ACCOUNTING_INVOCATION_HEADER]: id } : {},
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "accounting_add_transaction", arguments: { owner_qq: 123, source_id: sourceId } } }),
+        });
+        return await response.json() as { result: { isError?: boolean } };
+      };
+      expect((await call("qq-message:456:1")).result.isError).toBe(true);
+      expect((await call("qq-message:457:1", invocation.id)).result.isError).toBe(true);
+      expect(handleToolCall).not.toHaveBeenCalled();
+      expect((await call("qq-message:456:1", invocation.id)).result.isError).toBeUndefined();
+      expect(handleToolCall).toHaveBeenCalledTimes(1);
+      invocation.release();
+      expect((await call("qq-message:456:1", invocation.id)).result.isError).toBe(true);
+      expect(handleToolCall).toHaveBeenCalledTimes(1);
+    } finally {
+      invocation.release();
+      await host.stop();
+    }
+  });
+
+  it("rejects malformed JSON-RPC structures without stopping the host", async () => {
+    const port = await getFreePort();
+    const host = new McpHost([server("one")], logger(), "127.0.0.1", port);
+    await host.start();
+    try {
+      for (const body of ["null", "[]", "42", '{"method":"tools/call","params":null}']) {
+        const response = await fetch(`http://127.0.0.1:${port}/mcp/one`, { method: "POST", body });
+        expect(response.status).toBe(400);
+      }
+      expect((await fetch(`http://127.0.0.1:${port}/health`)).status).toBe(200);
+    } finally { await host.stop(); }
+  });
+
+  it("marks structured tool failures as MCP errors", async () => {
+    const port = await getFreePort();
+    const host = new McpHost([{ ...server("one"), handleToolCall: async () => ({ error: "invalid input" }) }], logger(), "127.0.0.1", port);
+    await host.start();
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/mcp/one`, { method: "POST", body: JSON.stringify({ id: 1, method: "tools/call", params: { name: "tool" } }) });
+      expect(await response.json()).toMatchObject({ result: { isError: true } });
+    } finally { await host.stop(); }
+  });
   it("only permits unauthenticated loopback listeners", async () => {
     expect(isLoopbackHost("127.0.0.1")).toBe(true);
     expect(isLoopbackHost("127.255.255.255")).toBe(true);

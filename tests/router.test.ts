@@ -133,13 +133,33 @@ describe("router dispatch", () => {
     expect(await router.dispatchMessage(event("/root-only", 3))).toBe("/root-only 仅在 /root 模式下可用");
   });
 
-  it("retries default commands that output non-ok text", async () => {
+  it("does not repeat side effects when default commands output non-ok text", async () => {
     const handler = vi.fn(async () => "unexpected stdout");
     router.registerCommand({ name: "retry", description: "retry", isDefault: true, minLevel: 1, handler });
 
     const reply = await router.dispatchMessage(event("hello", 1));
-    expect(handler).toHaveBeenCalledTimes(2);
+    expect(handler).toHaveBeenCalledTimes(1);
     expect(reply).toBe("【stdout】unexpected stdout");
+  });
+
+  it("serializes stateful commands and creates session directories before handlers", async () => {
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const handler = vi.fn(async (msg: string, dir: string) => {
+      expect(fs.existsSync(dir)).toBe(true);
+      order.push(`start:${msg}`);
+      if (msg === "first") await gate;
+      order.push(`end:${msg}`);
+      return "ok";
+    });
+    router.registerCommand(command("a", "/a", handler));
+    const first = router.dispatchMessage(event("/a first"));
+    const second = router.dispatchMessage(event("/a second"));
+    await vi.waitFor(() => expect(order).toEqual(["start:first"]));
+    release();
+    await Promise.all([first, second]);
+    expect(order).toEqual(["start:first", "end:first", "start:second", "end:second"]);
   });
 
   it("returns a friendly timeout message", async () => {
@@ -150,6 +170,6 @@ describe("router dispatch", () => {
     });
     router.registerCommand({ ...command("timeout", "/timeout", handler), minLevel: 1 });
 
-    await expect(router.dispatchMessage(event("/timeout", 1))).resolves.toBe("Claude Code 处理超时，请重试");
+    await expect(router.dispatchMessage(event("/timeout", 1))).resolves.toBe("处理超时，操作可能已完成，请先查询账本确认，避免重复记账");
   });
 });

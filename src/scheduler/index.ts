@@ -9,6 +9,8 @@ import type { ScheduledTask, SchedulerRef } from "../core/types.js";
 import { askClaude } from "../ai/claude-code.js";
 import { getConfig } from "../core/config.js";
 import { getProjectSessionId } from "../core/encode-path.js";
+import { withoutAccountingRequestContext } from "../core/accounting-request-context.js";
+import { withSessionQueue } from "../core/session-queue.js";
 
 // ---------------------------------------------------------------------------
 // Logger
@@ -30,20 +32,15 @@ const MAX_TIMEOUT_MS = 2_147_483_647;
 function parseCronField(field: string, min: number, max: number): Set<number> {
   const result = new Set<number>();
   for (const part of field.split(",")) {
-    if (part === "*") { for (let i = min; i <= max; i++) result.add(i); continue; }
-    const slashIdx = part.indexOf("/");
-    let range = part; let step = 1;
-    if (slashIdx !== -1) {
-      range = part.slice(0, slashIdx);
-      step = parseInt(part.slice(slashIdx + 1), 10) || 1;
+    const match = /^(\*|\d+(?:-\d+)?)(?:\/(\d+))?$/.exec(part);
+    if (!match) throw new Error("Invalid cron field");
+    const range = match[1];
+    const step = match[2] === undefined ? 1 : Number(match[2]);
+    const bounds = range === "*" ? [min, max] : range.split("-").map(Number);
+    const rMin = bounds[0], rMax = bounds[1] ?? rMin;
+    if (!Number.isSafeInteger(step) || step <= 0 || rMin < min || rMax > max || rMin > rMax) {
+      throw new Error("Invalid cron range or step");
     }
-    let rMin: number, rMax: number;
-    const dashIdx = range.indexOf("-");
-    if (range === "*") { rMin = min; rMax = max; }
-    else if (dashIdx !== -1) { rMin = parseInt(range.slice(0, dashIdx), 10); rMax = parseInt(range.slice(dashIdx + 1), 10); }
-    else { rMin = rMax = parseInt(range, 10); }
-    if (isNaN(rMin) || isNaN(rMax)) continue;
-    rMin = Math.max(rMin, min); rMax = Math.min(rMax, max);
     for (let i = rMin; i <= rMax; i += step) result.add(i);
   }
   return result;
@@ -128,6 +125,7 @@ function nextCronTime(expr: string, from: Date): Date {
 interface JobEntry {
   timer: NodeJS.Timeout;
   fn: () => Promise<void>;
+  running: boolean;
 }
 
 class SchedulerImpl implements SchedulerRef {
@@ -138,22 +136,34 @@ class SchedulerImpl implements SchedulerRef {
     trigger: { type: "interval"; minutes: number } | { type: "cron"; expression: string },
     id: string,
   ): void {
+    if (trigger.type === "interval") {
+      const ms = trigger.minutes * 60_000;
+      if (!Number.isFinite(ms) || ms < 1 || ms > MAX_TIMEOUT_MS) throw new Error("Invalid interval delay");
+    } else {
+      nextCronTime(trigger.expression, new Date());
+    }
     this.removeJob(id);
+
+    const run = async (entry: JobEntry): Promise<void> => {
+      if (this.jobs.get(id) !== entry || entry.running) return;
+      entry.running = true;
+      try { await withoutAccountingRequestContext(fn); }
+      catch (e: unknown) { logErr(`job ${id}: ${e}`); }
+      finally { entry.running = false; }
+    };
 
     if (trigger.type === "interval") {
       const ms = trigger.minutes * 60_000;
-      const timer = setInterval(() => {
-        fn().catch((e: unknown) => logErr(`job ${id}: ${e}`));
-      }, ms);
-      this.jobs.set(id, { timer, fn });
+      const entry: JobEntry = { timer: setInterval(() => { void run(entry); }, ms), fn, running: false };
+      this.jobs.set(id, entry);
       log(`added interval job ${id} (${trigger.minutes}m)`);
     } else {
       const scheduleNext = (): void => {
-        if (!this.jobs.has(id)) return;
+        if (this.jobs.get(id) !== placeholder) return;
         try {
           const next = nextCronTime(trigger.expression, new Date());
           const delay = next.getTime() - Date.now();
-          if (delay <= 0) { setTimeout(scheduleNext, 0); return; }
+          if (delay <= 0) { placeholder.timer = setTimeout(scheduleNext, 1); return; }
 
           if (delay > MAX_TIMEOUT_MS) {
             const timer = setTimeout(scheduleNext, MAX_TIMEOUT_MS);
@@ -164,9 +174,7 @@ class SchedulerImpl implements SchedulerRef {
           }
 
           const timer = setTimeout(() => {
-            fn().catch((e: unknown) => logErr(`job ${id}: ${e}`)).finally(() => {
-              if (this.jobs.has(id)) scheduleNext();
-            });
+            void run(placeholder).finally(scheduleNext);
           }, delay);
           const entry = this.jobs.get(id);
           if (entry) entry.timer = timer;
@@ -174,7 +182,7 @@ class SchedulerImpl implements SchedulerRef {
       };
       const placeholderTimer = setTimeout(() => {}, 0);
       clearTimeout(placeholderTimer);
-      const placeholder = { timer: placeholderTimer, fn };
+      const placeholder = { timer: placeholderTimer, fn, running: false };
       this.jobs.set(id, placeholder);
       scheduleNext();
       log(`added cron job ${id} (${trigger.expression})`);
@@ -200,19 +208,29 @@ class SchedulerImpl implements SchedulerRef {
   reloadFrom(sessionDir: string): void {
     const p = path.join(sessionDir, ".schedules.json");
     if (!fs.existsSync(p)) return;
-    let tasks: ScheduledTask[];
+    let tasks: unknown;
     try { tasks = JSON.parse(fs.readFileSync(p, "utf-8")); }
     catch { logErr(`reloadFrom: bad json ${p}`); return; }
 
-    for (const t of tasks) {
+    if (!Array.isArray(tasks)) { logErr(`reloadFrom: expected task array ${p}`); return; }
+    for (const candidate of tasks) {
+      if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
+        logErr("reloadFrom: invalid task structure"); continue;
+      }
+      const t = candidate as Partial<ScheduledTask>;
+      if (typeof t.name !== "string" || !t.name.trim() || typeof t.msg !== "string" || !t.msg.trim() ||
+          typeof t.cron !== "string" || (t.enabled !== undefined && typeof t.enabled !== "boolean")) {
+        logErr("reloadFrom: invalid task fields"); continue;
+      }
       if (t.enabled === false) continue;
       const jobId = `${sessionDir}::${t.name}`;
       if (this.jobs.has(jobId)) continue;
-      this.addJob(
-        () => fireCronJob(sessionDir, t.msg),
+      const message = t.msg;
+      try { this.addJob(
+        () => fireCronJob(sessionDir, message),
         { type: "cron", expression: t.cron },
         jobId,
-      );
+      ); } catch { logErr(`reloadFrom: invalid cron for task ${t.name}`); continue; }
       log(`reloaded job ${t.name} (${t.cron})`);
     }
   }
@@ -230,6 +248,7 @@ class SchedulerImpl implements SchedulerRef {
 // ---------------------------------------------------------------------------
 
 async function fireCronJob(sessionDir: string, triggerMsg: string): Promise<void> {
+  return withSessionQueue(sessionDir, async () => {
   log(`firing: ${triggerMsg.slice(0, 80)}`);
   const now = new Date();
   const nowStr = now.toISOString().replace("T", " ").slice(5, 16);
@@ -257,6 +276,7 @@ async function fireCronJob(sessionDir: string, triggerMsg: string): Promise<void
   } catch (e: unknown) {
     logErr(`fire failed: ${e}`);
   }
+  });
 }
 
 // ---------------------------------------------------------------------------

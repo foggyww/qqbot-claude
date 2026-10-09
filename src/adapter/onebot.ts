@@ -23,6 +23,17 @@ const INITIAL_RECONNECT_MS = 1_000;
 
 /** API call timeout (ms) — must complete within this window */
 const API_TIMEOUT_MS = 30_000;
+const CONNECT_TIMEOUT_MS = 30_000;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function integerId(value: unknown, positive: boolean): number | null {
+  if (typeof value !== "number" && (typeof value !== "string" || !/^-?\d+$/.test(value))) return null;
+  const n = Number(value);
+  return Number.isSafeInteger(n) && (!positive || n > 0) ? n : null;
+}
 
 // ---------------------------------------------------------------------------
 // Message segment → CQ-code conversion
@@ -33,8 +44,9 @@ const API_TIMEOUT_MS = 30_000;
  * Used as fallback when an event lacks a `raw_message` field.
  */
 function segmentToCqCode(seg: Record<string, unknown>): string {
-  const segType = String(seg.type ?? "text");
-  const data = seg.data as Record<string, unknown> | undefined;
+  if (typeof seg.type !== "string" || !/^[a-zA-Z_][a-zA-Z_0-9]*$/.test(seg.type)) return "";
+  const segType = seg.type;
+  const data = isRecord(seg.data) ? seg.data : undefined;
 
   if (segType === "text") {
     return typeof data?.text === "string" ? data.text : "";
@@ -67,8 +79,8 @@ function escapeCqValue(v: string): string {
  */
 function segmentsToRawMessage(message: unknown): string {
   if (typeof message === "string") return message;
-  if (!Array.isArray(message)) return String(message ?? "");
-  return message.map((seg) => segmentToCqCode(seg as Record<string, unknown>)).join("");
+  if (!Array.isArray(message)) return "";
+  return message.filter(isRecord).map(segmentToCqCode).join("");
 }
 
 /**
@@ -97,19 +109,19 @@ function parseOneBotEvent(raw: Record<string, unknown>): RawMessageEvent | null 
   // Only handle message events
   if (raw.post_type !== "message") return null;
 
-  const msgType = String(raw.message_type ?? "unknown");
+  const msgType = raw.message_type;
   if (msgType !== "private" && msgType !== "group") return null;
 
-  const userId = typeof raw.user_id === "number" ? raw.user_id : Number(raw.user_id);
-  const selfId = typeof raw.self_id === "number" ? raw.self_id : Number(raw.self_id);
+  const userId = integerId(raw.user_id, true);
+  const selfId = integerId(raw.self_id, true);
+  const groupId = msgType === "group" ? integerId(raw.group_id, true) : undefined;
+  const messageId = integerId(raw.message_id, false);
+  if (userId === null || selfId === null || groupId === null || messageId === null) return null;
 
-  const senderObj = raw.sender as Record<string, unknown> | undefined;
-  const senderUserId = typeof senderObj?.user_id === "number"
-    ? senderObj.user_id
-    : Number(senderObj?.user_id);
-  const senderNick = String(
-    senderObj?.nickname ?? senderObj?.card ?? raw.user_id,
-  );
+  const senderObj = isRecord(raw.sender) ? raw.sender : undefined;
+  const senderUserId = integerId(senderObj?.user_id, true) ?? userId;
+  const senderNick = typeof senderObj?.nickname === "string" ? senderObj.nickname :
+    typeof senderObj?.card === "string" ? senderObj.card : String(userId);
 
   // Prefer raw_message; fall back to building from message segments
   let rawMessage: string;
@@ -118,10 +130,6 @@ function parseOneBotEvent(raw: Record<string, unknown>): RawMessageEvent | null 
   } else {
     rawMessage = segmentsToRawMessage(raw.message);
   }
-
-  const messageId = typeof raw.message_id === "number"
-    ? raw.message_id
-    : Number(raw.message_id);
 
   const event: RawMessageEvent = {
     message_type: msgType,
@@ -134,9 +142,7 @@ function parseOneBotEvent(raw: Record<string, unknown>): RawMessageEvent | null 
     raw_message: rawMessage,
     message: raw.message ?? rawMessage,
     message_id: messageId,
-    group_id: msgType === "group"
-      ? (typeof raw.group_id === "number" ? raw.group_id : Number(raw.group_id))
-      : undefined,
+    group_id: groupId,
   };
 
   // Pass through remaining fields for downstream use
@@ -164,7 +170,7 @@ interface PendingCall {
 
 /** Format a failed OneBot response without dropping adapter-specific details. */
 export function formatOneBotApiError(response: Record<string, unknown>): string {
-  const retcode = String(response.retcode ?? "unknown");
+  const retcode = typeof response.retcode === "number" || typeof response.retcode === "string" ? String(response.retcode) : "unknown";
   const details = [response.msg, response.wording, response.message]
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .map((value) => value.trim())
@@ -182,9 +188,11 @@ export class OneBotAdapter implements QQAdapter {
   private stopped = false;
   private messageHandler: ((ctx: MessageContext) => Promise<void>) | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = INITIAL_RECONNECT_MS;
   private echoCounter = 0;
   private pendingCalls = new Map<string, PendingCall>();
+  private connectionWaiters = new Set<{ resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 
   constructor(wsUrl?: string) {
     this.wsUrl = wsUrl ?? process.env.ONEBOT_WS_URL ?? DEFAULT_WS_URL;
@@ -195,12 +203,19 @@ export class OneBotAdapter implements QQAdapter {
   // -----------------------------------------------------------------------
 
   async start(): Promise<void> {
+    if (this.ws || this.reconnectTimer) return;
     this.stopped = false;
     await this.connect();
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.clearConnectTimer();
+    for (const waiter of this.connectionWaiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error("Adapter stopped"));
+    }
+    this.connectionWaiters.clear();
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -220,7 +235,7 @@ export class OneBotAdapter implements QQAdapter {
       this.ws.onclose = null;
       this.ws.onerror = null;
       this.ws.onmessage = null;
-      this.ws.close();
+      try { this.ws.close(); } catch { /* Already disconnected. */ }
       this.ws = null;
     }
   }
@@ -336,7 +351,7 @@ export class OneBotAdapter implements QQAdapter {
    * Implements exponential backoff reconnect on failure.
    */
   private async connect(): Promise<void> {
-    if (this.stopped) return;
+    if (this.stopped || this.ws) return;
 
     console.log(`[onebot] connecting to ${this.wsUrl} ...`);
 
@@ -349,43 +364,66 @@ export class OneBotAdapter implements QQAdapter {
       return;
     }
 
-    this.ws.onopen = () => {
+    const ws = this.ws;
+    this.connectTimer = setTimeout(() => {
+      if (this.ws === ws) this.disconnectSocket(ws, "WebSocket connection timeout");
+    }, CONNECT_TIMEOUT_MS);
+
+    ws.onopen = () => {
+      if (this.ws !== ws || this.stopped) return;
+      this.clearConnectTimer();
       console.log(`[onebot] connected`);
       this.reconnectDelay = INITIAL_RECONNECT_MS;
-    };
-
-    this.ws.onmessage = (event) => {
-      this.handleMessage(event.data);
-    };
-
-    this.ws.onerror = (_event) => {
-      // WebSocket error events carry minimal info; the real handling
-      // happens in onclose (which always follows onerror).
-      console.error(`[onebot] WebSocket error`);
-    };
-
-    this.ws.onclose = (event) => {
-      console.log(`[onebot] disconnected (code=${event.code})`);
-      this.ws = null;
-
-      // Reject all pending API calls — the connection is gone
-      for (const [, pc] of this.pendingCalls) {
-        clearTimeout(pc.timer);
-        pc.reject(new Error("WebSocket disconnected"));
+      for (const waiter of this.connectionWaiters) {
+        clearTimeout(waiter.timer);
+        waiter.resolve();
       }
-      this.pendingCalls.clear();
+      this.connectionWaiters.clear();
+    };
 
-      if (!this.stopped) {
-        this.scheduleReconnect();
+    ws.onmessage = (event) => {
+      if (this.ws !== ws || this.stopped) return;
+      try {
+        this.handleMessage(event.data);
+      } catch {
+        console.warn("[onebot] invalid incoming message payload");
       }
     };
+
+    ws.onerror = () => {
+      if (this.ws === ws) this.disconnectSocket(ws, "WebSocket error");
+    };
+
+    ws.onclose = (event) => {
+      if (this.ws === ws) this.disconnectSocket(ws, `WebSocket disconnected (code=${event.code})`);
+    };
+  }
+
+  private clearConnectTimer(): void {
+    if (this.connectTimer) clearTimeout(this.connectTimer);
+    this.connectTimer = null;
+  }
+
+  private disconnectSocket(ws: WebSocket, reason: string): void {
+    if (this.ws !== ws) return;
+    console.error(`[onebot] ${reason}`);
+    this.ws = null;
+    this.clearConnectTimer();
+    ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null;
+    try { ws.close(); } catch { /* Failed connection may already be closed. */ }
+    for (const pc of this.pendingCalls.values()) {
+      clearTimeout(pc.timer);
+      pc.reject(new Error(reason));
+    }
+    this.pendingCalls.clear();
+    this.scheduleReconnect();
   }
 
   /**
    * Schedule a reconnection attempt with exponential backoff.
    */
   private scheduleReconnect(): void {
-    if (this.stopped) return;
+    if (this.stopped || this.reconnectTimer) return;
 
     const delay = this.reconnectDelay;
     console.log(`[onebot] reconnecting in ${delay}ms ...`);
@@ -393,7 +431,7 @@ export class OneBotAdapter implements QQAdapter {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_MS);
-      this.connect();
+      void this.connect();
     }, delay);
   }
 
@@ -406,12 +444,16 @@ export class OneBotAdapter implements QQAdapter {
    * Distinguishes between server-pushed events and API call responses.
    */
   private handleMessage(data: unknown): void {
-    let parsed: Record<string, unknown>;
+    let parsed: unknown;
     try {
       const str = typeof data === "string" ? data : new TextDecoder().decode(data as ArrayBuffer);
-      parsed = JSON.parse(str) as Record<string, unknown>;
+      parsed = JSON.parse(str);
     } catch {
       console.warn("[onebot] failed to parse incoming message");
+      return;
+    }
+    if (!isRecord(parsed)) {
+      console.warn("[onebot] invalid incoming message structure");
       return;
     }
 
@@ -447,7 +489,8 @@ export class OneBotAdapter implements QQAdapter {
 
     // Dispatch to registered handler (fire-and-forget — errors caught inside)
     if (this.messageHandler) {
-      this.messageHandler(ctx).catch((err: unknown) => {
+      const handler = this.messageHandler;
+      void Promise.resolve().then(() => handler(ctx)).catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[onebot] message handler error: ${msg}`);
       });
@@ -494,15 +537,16 @@ export class OneBotAdapter implements QQAdapter {
   }
 
   private async waitUntilConnected(timeoutMs = API_TIMEOUT_MS): Promise<void> {
+    if (this.stopped) throw new Error("Adapter stopped");
     if (this.ws?.readyState === WebSocket.OPEN) return;
 
-    const startedAt = Date.now();
-    while (Date.now() - startedAt < timeoutMs) {
-      if (this.ws?.readyState === WebSocket.OPEN) return;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-
-    throw new Error(`WebSocket not connected after ${timeoutMs}ms`);
+    return new Promise<void>((resolve, reject) => {
+      const waiter = { resolve, reject, timer: setTimeout(() => {
+        this.connectionWaiters.delete(waiter);
+        reject(new Error(`WebSocket not connected after ${timeoutMs}ms`));
+      }, timeoutMs) };
+      this.connectionWaiters.add(waiter);
+    });
   }
 }
 

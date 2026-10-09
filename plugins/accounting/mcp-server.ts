@@ -15,6 +15,13 @@ const TOOLS: McpToolDefinition[] = [
   { name: "accounting_calculate_daily_budget", description: "使用当前或虚拟余额，按日、月或年日历周期计算单日可支配金额", inputSchema: { type: "object", properties: { owner_qq: OWNER_QQ, balance_type: { type: "string", enum: ["current", "virtual"], default: "current" }, period_count: { type: "integer", minimum: 1, maximum: 36500 }, period_unit: { type: "string", enum: ["day", "month", "year"] }, start_date: { type: "string", description: "可选 YYYY-MM-DD，默认今天（Asia/Shanghai）" } }, required: ["owner_qq", "period_count", "period_unit"] } },
 ];
 
+for (const tool of TOOLS) {
+  if (["accounting_update_transaction", "accounting_delete_transaction", "accounting_set_balance", "accounting_set_virtual_balance"].includes(tool.name)) {
+    tool.inputSchema.properties = { ...(tool.inputSchema.properties as Record<string, unknown>), source_id: SOURCE_ID };
+    tool.inputSchema.required = [...(tool.inputSchema.required as string[]), "source_id"];
+  }
+}
+
 function numberArg(args: Record<string, unknown>, name: string): number {
   const value = args[name];
   if (typeof value !== "number") throw new AccountingError(name === "owner_qq" ? "INVALID_QQ" : "INVALID_ARGUMENT", `${name} 必须是数字`);
@@ -67,15 +74,15 @@ export function createAccountingMcpServer(ledger = new AccountingLedger()): McpS
               direction: optionalStringArg(args, "direction") as "income" | "expense" | undefined,
               content: optionalStringArg(args, "content"),
               occurredAt: optionalStringArg(args, "occurred_at"),
-            });
+            }, stringArg(args, "source_id"));
           case "accounting_delete_transaction":
-            return await ledger.deleteTransaction(ownerQq, stringArg(args, "transaction_id"));
+            return await ledger.deleteTransaction(ownerQq, stringArg(args, "transaction_id"), stringArg(args, "source_id"));
           case "accounting_get_balance":
             return await ledger.getBalance(ownerQq);
           case "accounting_set_balance":
-            return await ledger.setBalance(ownerQq, stringArg(args, "balance"));
+            return await ledger.setBalance(ownerQq, stringArg(args, "balance"), stringArg(args, "source_id"));
           case "accounting_set_virtual_balance":
-            return await ledger.setVirtualBalance(ownerQq, stringArg(args, "balance"));
+            return await ledger.setVirtualBalance(ownerQq, stringArg(args, "balance"), stringArg(args, "source_id"));
           case "accounting_calculate_daily_budget":
             return await ledger.calculateDailyBudget(ownerQq, {
               balanceType: optionalStringArg(args, "balance_type") as "current" | "virtual" | undefined,

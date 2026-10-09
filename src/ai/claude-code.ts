@@ -9,6 +9,9 @@ import { getConfig } from "../core/config.js";
 import type { AiBackend } from "../core/types.js";
 import { getProjectSessionId } from "../core/encode-path.js";
 import { isLoopbackHost, normalizeMcpPort } from "../mcp/host.js";
+import { ACCOUNTING_INVOCATION_HEADER, getAccountingRequestContext, registerAccountingInvocation } from "../core/accounting-request-context.js";
+import type { AccountingRequestContext } from "../core/accounting-request-context.js";
+import { cancelPendingSessionWork } from "../core/session-queue.js";
 
 // ---------------------------------------------------------------------------
 // Module-level Claude Code integration state (set by Bot.init)
@@ -42,6 +45,52 @@ interface RunClaudeOptions {
   addDirs: string | undefined;
   ccPluginDirs?: string[];
   disableTools?: boolean;
+  requestContext?: AccountingRequestContext;
+}
+
+export const MAX_CLAUDE_PROCESSES = 2;
+export const MAX_CLAUDE_OUTPUT_BYTES = 2 * 1024 * 1024;
+const activeProcesses = new Set<child_process.ChildProcess>();
+const activeInvocations = new Set<ReturnType<typeof registerAccountingInvocation>>();
+let reservedProcesses = 0;
+let stopped = false;
+
+export function startClaudeProcesses(): void {
+  stopped = false;
+}
+
+function killProcessTree(proc: child_process.ChildProcess): void {
+  try {
+    if (process.platform === "linux" && proc.pid) process.kill(-proc.pid, "SIGKILL");
+    else proc.kill("SIGKILL");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ESRCH") {
+      console.warn("[claude] failed to terminate subprocess group");
+      proc.kill("SIGKILL");
+    }
+  }
+}
+
+/** Keep invocation credentials private while making them readable by the sudo target. */
+export function prepareSudoSession(sessionDir: string, mcpConfigPath: string, uid?: number, gid?: number): void {
+  if (!Number.isSafeInteger(uid) || !Number.isSafeInteger(gid) || uid! < 0 || gid! < 0) {
+    throw new Error("Claude sudo mode requires valid run.uid and run.gid (or RUN_UID/RUN_GID)");
+  }
+  try {
+    fs.chownSync(sessionDir, uid!, gid!);
+    fs.chownSync(mcpConfigPath, uid!, gid!);
+    fs.chmodSync(mcpConfigPath, 0o600);
+  } catch {
+    throw new Error("Claude sudo mode cannot prepare private session files for the configured user");
+  }
+}
+
+/** Called before stopping MCP/adapter resources, preventing orphan AI tool calls. */
+export function stopClaudeProcesses(): void {
+  stopped = true;
+  cancelPendingSessionWork();
+  for (const invocation of activeInvocations) invocation.release();
+  for (const proc of activeProcesses) killProcessTree(proc);
 }
 
 export function buildToolPermissionArgs(disableTools: boolean, configuredTools: string[]): string[] {
@@ -106,15 +155,15 @@ export function buildClaudeEnvironment(
 export function selectClaudeOutput(
   exitCode: number | null,
   stdoutText: string,
-  stderrText: string,
+  _stderrText: string,
   disableTools: boolean,
+  signal?: NodeJS.Signals | null,
 ): string {
-  if (exitCode !== 0 && exitCode !== null) {
-    if (disableTools) throw new Error(`Claude one-shot failed with exit code ${exitCode}`);
-  }
+  if (signal) throw new Error(`Claude Code terminated by signal ${signal}`);
+  if (exitCode !== 0) throw new Error(`Claude Code failed with exit code ${exitCode ?? "unknown"}`);
   if (stdoutText) return stdoutText;
   if (disableTools) throw new Error("Claude one-shot returned no output");
-  return stderrText || "(Claude Code 无输出)";
+  return "(Claude Code 无输出)";
 }
 
 export function getPreservedEnvironmentKeys(
@@ -131,6 +180,25 @@ export function getPreservedEnvironmentKeys(
  * the environment, and collects stdout/stderr with timeout handling.
  */
 async function _runClaude(opts: RunClaudeOptions): Promise<string> {
+  if (stopped) throw new Error("Bot 已停止，AI 请求已取消");
+  if (reservedProcesses >= MAX_CLAUDE_PROCESSES) throw new Error("Claude Code 繁忙，请稍后再试");
+  reservedProcesses++;
+  const context = opts.requestContext ?? getAccountingRequestContext();
+  let invocation: ReturnType<typeof registerAccountingInvocation> | undefined;
+  try {
+    if (context && !opts.disableTools) {
+      invocation = registerAccountingInvocation(context);
+      activeInvocations.add(invocation);
+    }
+    return await runClaudeReserved(opts, invocation?.id, () => invocation?.release());
+  } finally {
+    invocation?.release();
+    if (invocation) activeInvocations.delete(invocation);
+    reservedProcesses--;
+  }
+}
+
+async function runClaudeReserved(opts: RunClaudeOptions, invocationId?: string, revokeInvocation?: () => void): Promise<string> {
   const config = getConfig();
   const model = opts.model ?? config.models[config.models.default] ?? config.models.flash;
   const sessionDir = path.resolve(opts.sessionDir);
@@ -138,7 +206,7 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
   // Ensure session directory exists
   fs.mkdirSync(sessionDir, { recursive: true });
 
-  const mcpConfigPath = writeMcpConfig(sessionDir, opts.disableTools ? [] : _mcpServerNames);
+  const mcpConfigPath = writeMcpConfig(sessionDir, opts.disableTools ? [] : _mcpServerNames, invocationId);
 
   // ---- Build arguments ----
   const dirs = opts.disableTools ? [] : normalizeAddDirs(opts.addDirs || config.paths.workspaceDir);
@@ -200,14 +268,7 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
     cmd = "claude";
     args = claudeArgs.slice(1); // drop leading "claude"
   } else if (useSudo) {
-    // Chat mode with privilege drop: chown the session dir and run via sudo as the target user
-    if (typeof runUid === "number" && typeof runGid === "number") {
-      try {
-        fs.chownSync(sessionDir, runUid, runGid);
-      } catch {
-        // Non-fatal — the uid/gid might not exist in test environments
-      }
-    }
+    prepareSudoSession(sessionDir, mcpConfigPath, runUid, runGid);
 
     const envKeys = getPreservedEnvironmentKeys(subprocessEnv, config.env, opts.disableTools === true);
     const preserveKeys = envKeys.join(",");
@@ -228,7 +289,9 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
     cwd: sessionDir,
     env: subprocessEnv,
     stdio: ["ignore", "pipe", "pipe"],
+    detached: process.platform === "linux",
   });
+  activeProcesses.add(proc);
 
   const timeoutMs = (config.settings.timeout ?? 180) * 1000;
 
@@ -236,29 +299,39 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
   const stdoutChunks: Buffer[] = [];
   const stderrChunks: Buffer[] = [];
 
-  proc.stdout.on("data", (chunk: Buffer) => {
-    stdoutChunks.push(chunk);
-  });
-
-  proc.stderr.on("data", (chunk: Buffer) => {
-    stderrChunks.push(chunk);
-  });
-
   // ---- Wait for completion with timeout ----
   try {
-    const exitCode = await new Promise<number | null>((resolve, reject) => {
+    const exit = await new Promise<{code: number | null; signal: NodeJS.Signals | null}>((resolve, reject) => {
+      let failure: Error | undefined;
+      let outputBytes = 0;
       const timer = setTimeout(() => {
-        proc.kill("SIGKILL");
-        reject(new TimeoutError(`Claude Code timed out after ${timeoutMs}ms`));
+        failure = new TimeoutError(`Claude Code timed out after ${timeoutMs}ms`);
+        revokeInvocation?.();
+        killProcessTree(proc);
       }, timeoutMs);
-
-      proc.on("close", (code) => {
+      const collect = (chunks: Buffer[], chunk: Buffer): void => {
+        if (failure) return;
+        outputBytes += chunk.length;
+        if (outputBytes > MAX_CLAUDE_OUTPUT_BYTES) {
+          failure = new Error("Claude Code output exceeded limit");
+          revokeInvocation?.();
+          killProcessTree(proc);
+          return;
+        }
+        chunks.push(chunk);
+      };
+      proc.stdout.on("data", (chunk: Buffer) => collect(stdoutChunks, chunk));
+      proc.stderr.on("data", (chunk: Buffer) => collect(stderrChunks, chunk));
+      proc.on("exit", () => killProcessTree(proc));
+      proc.on("close", (code, signal) => {
         clearTimeout(timer);
-        resolve(code);
+        if (failure) reject(failure);
+        else resolve({code, signal});
       });
 
       proc.on("error", (err) => {
         clearTimeout(timer);
+        revokeInvocation?.();
         reject(err);
       });
     });
@@ -266,43 +339,43 @@ async function _runClaude(opts: RunClaudeOptions): Promise<string> {
     const stdoutText = Buffer.concat(stdoutChunks).toString("utf-8").trim();
     const stderrText = Buffer.concat(stderrChunks).toString("utf-8").trim();
 
-    if (exitCode !== 0 && exitCode !== null) {
-      console.warn(opts.disableTools ? `[claude] one-shot exit=${exitCode}` : `[claude] exit=${exitCode} stderr_len=${stderrText.length}`);
+    if (exit.code !== 0) {
+      console.warn(`[claude] exit=${exit.code} signal=${exit.signal} stderr_len=${stderrText.length}`);
     }
-    const output = selectClaudeOutput(exitCode, stdoutText, stderrText, opts.disableTools === true);
+    const output = selectClaudeOutput(exit.code, stdoutText, stderrText, opts.disableTools === true, exit.signal);
     console.info(`[claude] stdout_len=${output.length}`);
     return output;
   } catch (err: unknown) {
     // Ensure subprocess is killed on error
-    try {
-      proc.kill("SIGKILL");
-    } catch {
-      // Already dead
-    }
+    killProcessTree(proc);
 
     if (err instanceof TimeoutError) {
       throw err;
     }
     throw err;
+  } finally {
+    activeProcesses.delete(proc);
   }
 }
 
-export function writeMcpConfig(sessionDir: string, serverNames = _mcpServerNames): string {
+export function writeMcpConfig(sessionDir: string, serverNames = _mcpServerNames, invocationId?: string): string {
   const host = process.env.QQBOT_MCP_HOST ?? "127.0.0.1";
   if (!isLoopbackHost(host)) throw new Error(`QQBOT_MCP_HOST 必须是 loopback 地址，当前为 ${host}`);
   const port = normalizeMcpPort(process.env.QQBOT_MCP_PORT ?? 8765);
   const filePath = path.resolve(sessionDir, ".qqbot-mcp.json");
-  const mcpServers: Record<string, { type: "http"; url: string }> = {};
+  const mcpServers: Record<string, { type: "http"; url: string; headers?: Record<string, string> }> = {};
   for (const name of normalizeMcpServerNames(serverNames)) {
     mcpServers[name] = {
       type: "http",
       url: `http://${host}:${port}/mcp/${encodeURIComponent(name)}`,
+      ...(invocationId ? { headers: { [ACCOUNTING_INVOCATION_HEADER]: invocationId } } : {}),
     };
   }
   const config = {
     mcpServers,
   };
-  fs.writeFileSync(filePath, JSON.stringify(config, null, 2), "utf-8");
+  fs.writeFileSync(filePath, JSON.stringify(config, null, 2), { encoding: "utf-8", mode: 0o600 });
+  fs.chmodSync(filePath, 0o600);
   return filePath;
 }
 
@@ -357,6 +430,7 @@ class ClaudeCodeBackend implements AiBackend {
     effort?: string,
     addDirs?: string,
     ccPluginDirs?: string[],
+    requestContext?: AccountingRequestContext,
   ): Promise<string> {
     return _runClaude({
       msg,
@@ -368,6 +442,7 @@ class ClaudeCodeBackend implements AiBackend {
       runAsRoot: false,
       addDirs,
       ccPluginDirs,
+      requestContext,
     });
   }
 }
@@ -390,6 +465,7 @@ class ClaudeCodeRootBackend implements AiBackend {
     effort?: string,
     addDirs?: string,
     ccPluginDirs?: string[],
+    requestContext?: AccountingRequestContext,
   ): Promise<string> {
     const config = getConfig();
     // Root mode always includes both project and workspace dirs
@@ -407,6 +483,7 @@ class ClaudeCodeRootBackend implements AiBackend {
       runAsRoot: true,
       addDirs: dirs,
       ccPluginDirs,
+      requestContext,
     });
   }
 }
@@ -461,8 +538,9 @@ export async function askClaude(
   model?: string,
   effort?: string,
   ccPluginDirs?: string[],
+  requestContext?: AccountingRequestContext,
 ): Promise<string> {
-  return getClaudeCodeBackend().ask(msg, sessionDir, sessionId, systemPrompt, model, effort, undefined, ccPluginDirs);
+  return getClaudeCodeBackend().ask(msg, sessionDir, sessionId, systemPrompt, model, effort, undefined, ccPluginDirs, requestContext);
 }
 
 /** Run a one-shot text generation with built-in tools, MCP, plugins and project settings disabled. */
@@ -499,8 +577,9 @@ export async function askClaudeRoot(
   effort?: string,
   addDirs?: string,
   ccPluginDirs?: string[],
+  requestContext?: AccountingRequestContext,
 ): Promise<string> {
-  return getClaudeCodeRootBackend().ask(msg, sessionDir, sessionId, systemPrompt, model, effort, addDirs, ccPluginDirs);
+  return getClaudeCodeRootBackend().ask(msg, sessionDir, sessionId, systemPrompt, model, effort, addDirs, ccPluginDirs, requestContext);
 }
 
 // Re-export for convenience

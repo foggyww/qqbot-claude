@@ -10,6 +10,7 @@ import {
 import type { RawMessageEvent } from "./context.js";
 import { getLevel, isGroupWhitelisted, LEVEL_LABELS } from "./permission.js";
 import type { Command, SessionStore } from "./types.js";
+import { withSessionQueue } from "./session-queue.js";
 
 // ---------------------------------------------------------------------------
 // Module-level session store (set by Bot.init)
@@ -256,49 +257,42 @@ async function executeCommand(
   const sKey = sessionKey(event);
   const sessionDir = getSessionDir(sKey);
 
-  // ---- require_root 状态校验 ----
-  if (command.requireRoot && !isRootMode(sKey)) {
-    return `${command.prefix} 仅在 /root 模式下可用`;
-  }
+  return withSessionQueue(sessionDir, async () => {
+    fs.mkdirSync(sessionDir, { recursive: true });
 
-  const ctx = buildCtx(event, { sessionStore: _sessionStore ?? undefined, botNick: _botNick });
+    // ---- require_root 状态校验 ----
+    if (command.requireRoot && !isRootMode(sKey)) {
+      return `${command.prefix} 仅在 /root 模式下可用`;
+    }
 
-  try {
-    const reply = await command.handler(remaining, sessionDir, ctx);
+    const ctx = buildCtx(event, { sessionStore: _sessionStore ?? undefined, botNick: _botNick });
 
-    // 默认对话：root 模式直接返回，普通模式检查 stdout 违规
-    if (command.isDefault) {
-      if (isRootMode(sKey)) {
-        return reply && reply.trim() ? reply : null;
-      }
-      // 普通模式：若输出非 ok/空，说明违反了「最后一步——不要多写字」规则
-      if (reply && reply.trim() && reply.trim() !== "ok") {
-        // 重试一次
-        const errPrompt = [
-          "【错误】你违反了「最后一步——不要多写字」规则，在我这里输出了多余的文字。",
-          "请先用 get_private_msg_history 或 get_group_msg_history 检查已经发出的消息，",
-          "确认不要发重复内容，然后重新用 send_message 发送未发出的部分。",
-          "全部发完之后，只输出 ok。",
-        ].join("\n");
-        const retry = await command.handler(
-          `${remaining}\n\n${errPrompt}`,
-          sessionDir,
-          ctx,
-        );
-        if (retry && retry.trim() && retry.trim() !== "ok") {
-          return `【stdout】${retry}`;
+    try {
+      const reply = await command.handler(remaining, sessionDir, ctx);
+
+      // Never re-run business operations because of the final response format.
+      if (command.isDefault) {
+        if (isRootMode(sKey)) {
+          return reply && reply.trim() ? reply : null;
         }
+        if (reply && reply.trim() && reply.trim() !== "ok") {
+          return `【stdout】${reply}`;
+        }
+        return null;
       }
-      return null;
-    }
 
-    return reply && reply.trim() ? reply : null;
-  } catch (err: unknown) {
-    if (err instanceof Error && err.name === "TimeoutError") {
-      return "Claude Code 处理超时，请重试";
+      return reply && reply.trim() ? reply : null;
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === "TimeoutError") {
+        return "处理超时，操作可能已完成，请先查询账本确认，避免重复记账";
+      }
+      console.warn("[router] command failed", err instanceof Error ? err.name : "UnknownError");
+      return "处理失败，操作可能已完成，请先查询账本确认，避免重复记账";
     }
-    throw err;
-  }
+  }).catch((error: unknown) => {
+    console.warn("[router] command admission failed", error instanceof Error ? error.name : "UnknownError");
+    return "会话繁忙或已停止，请稍后再试";
+  });
 }
 
 /**

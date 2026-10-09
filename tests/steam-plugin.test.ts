@@ -187,6 +187,26 @@ describe("Steam shared helpers", () => {
 
     expect(result).toMatchObject({ error: "Steam Store API HTTP 500", contentType: "text/plain", body: "nope" });
   });
+
+  it("limits streamed response size and handles network failures without exposing URLs", async () => {
+    process.env.STEAM_WEB_API_KEY = "private-test-key";
+    globalThis.fetch = vi.fn(async () => mockResponse("x".repeat(4 * 1024 * 1024 + 1))) as typeof fetch;
+    expect(await fetchSteam("/test")).toEqual({ error: "Steam API 请求失败、超时或响应过大" });
+    globalThis.fetch = vi.fn(async () => { throw new Error("URL contained private-test-key"); }) as typeof fetch;
+    const result = await fetchSteam("/test");
+    expect(JSON.stringify(result)).not.toContain("private-test-key");
+    expect(result).toMatchObject({ error: expect.any(String) });
+  });
+
+  it("provides an abort deadline that also covers response body reads", async () => {
+    process.env.STEAM_WEB_API_KEY = "test-key";
+    const fetchMock = vi.fn(async (_url: string, options: RequestInit) => {
+      expect(options.signal).toBeInstanceOf(AbortSignal);
+      return mockResponse('{}');
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+    expect(await fetchSteam("/test")).toEqual({});
+  });
 });
 
 describe("user mapping Steam schema", () => {

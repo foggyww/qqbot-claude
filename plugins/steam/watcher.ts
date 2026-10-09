@@ -20,6 +20,8 @@ let _apiKey = "";
 let _timer: ReturnType<typeof setInterval> | null = null;
 let _firstRun = true;
 let _intervalMs = 300_000;
+let _generation = 0;
+let _runningTick: Promise<number> | null = null;
 
 function loadJson(file: string): Record<string, unknown> {
   try { return JSON.parse(fs.readFileSync(file, "utf-8")); } catch { return {}; }
@@ -115,6 +117,7 @@ export function parseWatcherPlayers(value: unknown): WatcherGroupState | null {
 }
 
 export function initWatcher(ctx: BotContext, apiKey: string): void {
+  stopWatcher();
   _ctx = ctx;
   _apiKey = apiKey;
   _intervalMs = Math.max(ctx.config.steamWatcher.intervalMinutes, 1) * 60_000;
@@ -131,6 +134,7 @@ function start(): void {
 }
 
 export function stopWatcher(): void {
+  _generation += 1;
   if (_timer) { clearInterval(_timer); _timer = null; }
 }
 
@@ -205,8 +209,16 @@ export async function sendWatcherNotifications(
   return failedNotifications;
 }
 
-async function doTick(): Promise<number> {
-  if (!_ctx || !_apiKey) return 0;
+function doTick(): Promise<number> {
+  if (_runningTick) return _runningTick;
+  if (!_ctx || !_apiKey) return Promise.resolve(0);
+  const work = collectWatcherState(_ctx, _apiKey, _generation);
+  _runningTick = work;
+  void work.finally(() => { if (_runningTick === work) _runningTick = null; }).catch(() => undefined);
+  return work;
+}
+
+async function collectWatcherState(ctx: BotContext, key: string, generation: number): Promise<number> {
 
   const subs = loadSteamSubscriptions();
   const activeGroups = Object.entries(subs).filter(([, subscription]) => subscription.status).map(([k]) => Number(k));
@@ -216,9 +228,11 @@ async function doTick(): Promise<number> {
   const newState: WatcherState = {};
 
   for (const gid of activeGroups) {
+    if (generation !== _generation) return 0;
     const groupState: WatcherGroupState = {};
     try {
-      const members = await _ctx.adapter.getGroupMembers(gid);
+      const members = await ctx.adapter.getGroupMembers(gid);
+      if (generation !== _generation) return 0;
       const sids: string[] = [];
       for (const member of members) {
         const mapping = getUserMapping(member.qq);
@@ -229,26 +243,27 @@ async function doTick(): Promise<number> {
         continue;
       }
 
-      const players = await fetchSteam(`/ISteamUser/GetPlayerSummaries/v2/?steamids=${sids.map(encodeURIComponent).join(",")}`, _apiKey);
+      const players = await fetchSteam(`/ISteamUser/GetPlayerSummaries/v2/?steamids=${sids.map(encodeURIComponent).join(",")}`, key);
       if (isSteamApiError(players)) {
-        _ctx.logger.warn(`Steam watcher 查询失败: ${players.error}`);
+        ctx.logger.warn(`Steam watcher 查询失败: ${players.error}`);
         newState[String(gid)] = preserveWatcherGroupState(oldState[String(gid)] ?? {}, null);
         continue;
       }
       const parsedPlayers = parseWatcherPlayers(players);
       if (parsedPlayers === null) {
-        _ctx.logger.warn(`Steam watcher 群 ${gid} 返回结构无效，保留旧状态`);
+        ctx.logger.warn(`Steam watcher 群 ${gid} 返回结构无效，保留旧状态`);
         newState[String(gid)] = preserveWatcherGroupState(oldState[String(gid)] ?? {}, null);
         continue;
       }
       newState[String(gid)] = parsedPlayers;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      _ctx.logger.warn(`Steam watcher 跳过群 ${gid}: ${msg}`);
+      ctx.logger.warn(`Steam watcher 跳过群 ${gid}: ${msg}`);
       newState[String(gid)] = preserveWatcherGroupState(oldState[String(gid)] ?? {}, null);
     }
   }
 
+  if (generation !== _generation) return 0;
   saveJson(STATE_FILE, newState);
   if (_firstRun) { _firstRun = false; return 0; }
 
@@ -257,7 +272,9 @@ async function doTick(): Promise<number> {
     oldState,
     newState,
     areSteamNotificationsEnabled(),
-    _ctx.sendMessage,
-    _ctx.logger.warn.bind(_ctx.logger),
+    async (type, target, message) => {
+      if (generation === _generation && areSteamNotificationsEnabled()) await ctx.sendMessage(type, target, message);
+    },
+    ctx.logger.warn.bind(ctx.logger),
   );
 }

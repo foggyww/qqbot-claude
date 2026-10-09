@@ -28,6 +28,10 @@ Claude Code CLI 调用、chat/root 模式、session、MCP config、`--add-dir`�
 - Chat 模式使用会话目录和 Claude session id 支持连续对话。
 - Root 模式可加入项目目录和 workspace 作为允许目录。
 - MCP config 文件写入当前 session 目录，并以绝对路径传给 Claude Code。
+- 普通和 one-shot 调用的非零退出码、signal 退出均为失败，不得向用户返回 stderr 或部分成功输出。
+- 全局最多运行 2 个 Claude 子进程；满载时立即返回忙碌错误，不无限堆积等待。
+- stdout/stderr 合计最多收集 2 MiB；超限、超时和 Bot 停止时终止 Linux 子进程组（含后代），及时清理计时器和并发额度。
+- AI 调用可附加源自真实 MessageContext 的可信请求上下文，供 MCP Host 校验记账身份；不得从模型生成文本恢复身份。
 
 ## Error Handling
 

@@ -46,10 +46,13 @@ export async function handle(
     ? String(rawEvent.message_id)
     : "unknown";
   msg = `${ctx.senderNick || "未知"}（qq=${ctx.senderQq || 0}，message_id=${messageId}）说：${msg}`;
+  const requestContext = messageId !== "unknown" && Number.isSafeInteger(ctx.senderQq) && ctx.senderQq > 0
+    ? { senderQq: ctx.senderQq, messageId }
+    : undefined;
 
   if (store.isRootMode(sessionDir)) {
     const sessionId = store.getSessionId(sessionDir);
-    return askClaudeRoot(msg, sessionDir, sessionId, undefined, model, effort);
+    return askClaudeRoot(msg, sessionDir, sessionId, undefined, model, effort, undefined, undefined, requestContext);
   }
 
   // Normal (non-root) mode: build system prompt
@@ -68,7 +71,7 @@ export async function handle(
   });
 
   const sessionId = store.getSessionId(sessionDir);
-  return askClaude(msg, sessionDir, sessionId, chat, model, effort);
+  return askClaude(msg, sessionDir, sessionId, chat, model, effort, undefined, requestContext);
 }
 
 // ---------------------------------------------------------------------------

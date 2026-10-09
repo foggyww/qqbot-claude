@@ -2,6 +2,7 @@
 import * as http from "node:http";
 import * as net from "node:net";
 import type { Logger, McpServer } from "../core/types.js";
+import { ACCOUNTING_INVOCATION_HEADER, authorizeAccountingWrite } from "../core/accounting-request-context.js";
 
 const MAX_BODY_SIZE_BYTES = 1_048_576;
 
@@ -125,7 +126,14 @@ export class McpHost {
       return;
     }
 
-    this.writeJson(res, 200, await this.handleRpc(mcpServer, rpc));
+    if (!rpc || typeof rpc !== "object" || Array.isArray(rpc) ||
+      typeof rpc.method !== "string" ||
+      (rpc.params !== undefined && (!rpc.params || typeof rpc.params !== "object" || Array.isArray(rpc.params)))) {
+      this.writeJson(res, 400, makeError(null, -32600, "Invalid request"));
+      return;
+    }
+    const invocation = req.headers[ACCOUNTING_INVOCATION_HEADER];
+    this.writeJson(res, 200, await this.handleRpc(mcpServer, rpc, typeof invocation === "string" ? invocation : undefined));
   }
 
   private resolveServerName(url: string): string | null {
@@ -134,7 +142,7 @@ export class McpHost {
     return match?.[1] ? decodeURIComponent(match[1]) : null;
   }
 
-  private async handleRpc(server: McpServer, req: JsonRpcRequest): Promise<Record<string, unknown> | null> {
+  private async handleRpc(server: McpServer, req: JsonRpcRequest, invocationId?: string): Promise<Record<string, unknown> | null> {
     const method = req.method;
     const id = req.id;
 
@@ -157,9 +165,12 @@ export class McpHost {
       const name = String(params.name ?? "");
       const args = params.arguments ?? {};
       try {
+        if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("Tool arguments must be an object");
+        authorizeAccountingWrite(server.name, name, args, invocationId);
         const result = await server.handleToolCall(name, args);
         const text = typeof result === "string" ? result : JSON.stringify(result);
-        return makeResult(id, { content: [{ type: "text", text }] });
+        const isError = result !== null && typeof result === "object" && "error" in result;
+        return makeResult(id, { content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         return makeResult(id, { content: [{ type: "text", text: `error: ${msg}` }], isError: true });

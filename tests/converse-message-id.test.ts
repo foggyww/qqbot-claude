@@ -53,6 +53,8 @@ describe("converse message metadata", () => {
       "system prompt",
       "model",
       "medium",
+      undefined,
+      { senderQq: 123, messageId: "456" },
     );
   });
 
@@ -65,6 +67,9 @@ describe("converse message metadata", () => {
       undefined,
       "model",
       "medium",
+      undefined,
+      undefined,
+      { senderQq: 123, messageId: "456" },
     );
   });
 });

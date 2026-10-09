@@ -155,13 +155,49 @@ export function areSteamNotificationsEnabled(file = STEAM_SETTINGS_FILE): boolea
   return loadSteamSettings(file).notificationsEnabled;
 }
 
+async function fetchSteamText(url: string): Promise<{ response: Response; text: string }> {
+  const response = await fetch(url, {
+    headers: { "User-Agent": "qqbot/1.0" },
+    signal: AbortSignal.timeout(15_000),
+  });
+  const maxBytes = 4 * 1024 * 1024;
+  if (!response.body) {
+    const text = await response.text();
+    if (Buffer.byteLength(text) > maxBytes) throw new Error("Response too large");
+    return { response, text };
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) throw new Error("Response too large");
+      chunks.push(value);
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+  return { response, text: Buffer.concat(chunks).toString("utf-8") };
+}
+
 export async function fetchSteam(pathname: string, keyOverride?: string): Promise<unknown> {
   const key = keyOverride ?? apiKey();
   if (!key) return { error: "未配置 STEAM_WEB_API_KEY，请在 .qqbotrc.toml 的 [env] 中设置" };
   const sep = pathname.includes("?") ? "&" : "?";
   const url = `${BASE}${pathname}${sep}key=${encodeURIComponent(key)}`;
-  const response = await fetch(url, { headers: { "User-Agent": "qqbot/1.0" } });
-  const text = await response.text();
+  let response: Response;
+  let text: string;
+  try {
+    ({ response, text } = await fetchSteamText(url));
+  } catch {
+    return { error: "Steam API 请求失败、超时或响应过大" } satisfies SteamApiError;
+  }
   const contentType = response.headers.get("content-type") ?? "";
 
   if (!response.ok) {
@@ -192,8 +228,13 @@ export async function fetchSteam(pathname: string, keyOverride?: string): Promis
 
 export async function fetchSteamStoreSearch(search: string): Promise<unknown> {
   const url = `${STORE_SEARCH}/?term=${encodeURIComponent(search)}&l=zh`;
-  const response = await fetch(url, { headers: { "User-Agent": "qqbot/1.0" } });
-  const text = await response.text();
+  let response: Response;
+  let text: string;
+  try {
+    ({ response, text } = await fetchSteamText(url));
+  } catch {
+    return { error: "Steam Store API 请求失败、超时或响应过大" } satisfies SteamApiError;
+  }
   const contentType = response.headers.get("content-type") ?? "";
 
   if (!response.ok) {

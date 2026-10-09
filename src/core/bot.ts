@@ -5,7 +5,9 @@ import type { RawMessageEvent } from "./context.js";
 import { dispatchMessage, setSessionStore } from "./router.js";
 import type { BotConfig, BotContext, Logger, MessageContext, QQAdapter, SessionStore, SessionState, SchedulerRef } from "./types.js";
 import { PluginSystem } from "../plugin/index.js";
-import { setCcPluginDirs, setMcpServerNames } from "../ai/claude-code.js";
+import { setCcPluginDirs, setMcpServerNames, startClaudeProcesses, stopClaudeProcesses } from "../ai/claude-code.js";
+import { clearAccountingInvocations, withAccountingRequestContext } from "./accounting-request-context.js";
+import { MessageDeduplicator } from "./message-deduplicator.js";
 import { createQqMcpServer } from "../mcp/qq-server.js";
 import { McpHost } from "../mcp/host.js";
 import { getScheduler, startScheduler } from "../scheduler/index.js";
@@ -108,6 +110,8 @@ export class Bot {
 
   private started = false;
   private mcpHost: McpHost | null = null;
+  private readonly receivedMessages = new MessageDeduplicator();
+  private stopping = false;
 
   constructor(adapter: QQAdapter, sessionStore?: SessionStore, scheduler?: SchedulerRef) {
     this.adapter = adapter;
@@ -187,29 +191,29 @@ export class Bot {
       return;
     }
 
+    this.stopping = false;
+    startClaudeProcesses();
     // 注册消息处理回调
     this.adapter.onMessage(async (msgCtx) => {
       await this.handleIncomingMessage(msgCtx);
     });
 
-    // 启动适配器
-    await this.adapter.start();
-
-    await this.resolveBotNickAfterConnect();
-
-    // 启动项目内 MCP Host，生命周期跟随 Bot
-    this.mcpHost = new McpHost(
-      this.pluginSystem.getAllMcpServers().map((item) => item.server),
-      this.logger,
-    );
-    await this.mcpHost.start();
-
-    // 恢复持久化定时任务。定时器保存在内存中，进程重启后必须从各 session 的
-    // .schedules.json 重新加载，否则磁盘上有任务但不会触发。
-    this.restoreScheduledTasks();
-
-    this.started = true;
-    this.logger.info("Bot 已启动");
+    try {
+      // Expose tools before QQ can deliver commands requiring them.
+      this.mcpHost = new McpHost(
+        this.pluginSystem.getAllMcpServers().map((item) => item.server),
+        this.logger,
+      );
+      await this.mcpHost.start();
+      await this.adapter.start();
+      await this.resolveBotNickAfterConnect();
+      this.restoreScheduledTasks();
+      this.started = true;
+      this.logger.info("Bot 已启动");
+    } catch (error) {
+      await this.stop();
+      throw error;
+    }
   }
 
   private restoreScheduledTasks(): void {
@@ -227,8 +231,13 @@ export class Bot {
       const sessionDir = path.join(sessionsDir, entry.name);
       if (!fs.existsSync(path.join(sessionDir, ".schedules.json"))) continue;
       scheduler.removeAllFor(sessionDir);
-      scheduler.reloadFrom(sessionDir);
-      restored += 1;
+      try {
+        scheduler.reloadFrom(sessionDir);
+        restored += 1;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.error(`恢复定时任务失败 (${entry.name}): ${message}`);
+      }
     }
 
     this.logger.info(`Scheduler 已启动，已扫描 ${restored} 个定时任务会话`);
@@ -251,7 +260,10 @@ export class Bot {
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
     this.scheduler.stop?.();
+    clearAccountingInvocations();
+    stopClaudeProcesses();
     await this.pluginSystem.unregisterAll();
     try {
       await this.mcpHost?.stop();
@@ -261,13 +273,11 @@ export class Bot {
     } finally {
       this.mcpHost = null;
     }
-    if (this.started) {
-      try {
-        await this.adapter.stop();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.logger.error(`停止 QQ Adapter 失败: ${message}`);
-      }
+    try {
+      await this.adapter.stop();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`停止 QQ Adapter 失败: ${message}`);
     }
     this.started = false;
     this.logger.info("Bot 已停止");
@@ -279,8 +289,13 @@ export class Bot {
   async runForever(): Promise<void> {
     const shutdown = async (signal: string) => {
       this.logger.info(`收到 ${signal}，正在停止...`);
-      await this.stop();
-      process.exit(0);
+      try {
+        await this.stop();
+        process.exit(0);
+      } catch (error) {
+        this.logger.error(`停止失败: ${error instanceof Error ? error.message : String(error)}`);
+        process.exit(1);
+      }
     };
 
     process.once("SIGINT", () => shutdown("SIGINT"));
@@ -304,26 +319,34 @@ export class Bot {
   private async handleIncomingMessage(
     msgCtx: MessageContext,
   ): Promise<void> {
-    msgCtx.botNick = this.botNick;
-    // 通知所有插件 onMessage（被动监听）
-    await this.pluginSystem.onMessage(msgCtx);
-
-    // 构建 RawMessageEvent 供路由器使用
-    const raw = msgCtx.rawEvent;
-    if (!raw || typeof raw !== "object") return;
-
-    // 如果 rawEvent 已经是路由器期望的结构，直接使用
-    // 否则从 MessageContext 反向构造
-    const event = this.ensureRawEvent(raw, msgCtx);
-
+    if (this.stopping) return;
+    let eventKey: string | undefined;
     try {
-      const reply = await dispatchMessage(event);
+      msgCtx.botNick = this.botNick;
+      const raw = msgCtx.rawEvent;
+      if (!raw || typeof raw !== "object") return;
+      const event = this.ensureRawEvent(raw, msgCtx);
+      if (!Number.isSafeInteger(event.message_id) || !Number.isSafeInteger(msgCtx.senderQq) || msgCtx.senderQq <= 0) {
+        this.logger.warn("丢弃缺少有效消息身份的事件");
+        return;
+      }
+      const key = `${event.self_id}:${event.message_type}:${event.group_id ?? 0}:${event.user_id}:${event.message_id}`;
+      if (!this.receivedMessages.begin(key)) return;
+      eventKey = key;
+      await this.pluginSystem.onMessage(msgCtx);
+      if (this.stopping) return;
+      const reply = await withAccountingRequestContext(
+        { senderQq: msgCtx.senderQq, messageId: String(event.message_id) },
+        () => dispatchMessage(event),
+      );
       if (reply) {
         await this.sendMessage(msgCtx.replyType, msgCtx.replyId, reply);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`消息处理异常: ${msg}`);
+    } finally {
+      if (eventKey) this.receivedMessages.finish(eventKey);
     }
   }
 
@@ -363,7 +386,7 @@ export class Bot {
           ? r.raw_message
           : (r.message as string) ?? "",
       message_id:
-        typeof r.message_id === "number" ? r.message_id : 0,
+        typeof r.message_id === "number" ? r.message_id : typeof r.message_id === "string" && /^-?\d+$/.test(r.message_id) ? Number(r.message_id) : NaN,
       message: r.message ?? "",
       group_id:
         typeof r.group_id === "number"

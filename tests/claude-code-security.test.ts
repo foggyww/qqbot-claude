@@ -50,6 +50,12 @@ describe("Claude one-shot security arguments", () => {
     expect(selectClaudeOutput(0, "safe output", "", true)).toBe("safe output");
   });
 
+  it("rejects failed and signal exits in normal mode without leaking stderr", () => {
+    expect(() => selectClaudeOutput(2, "partial", "private secret", false)).toThrow("exit code 2");
+    expect(() => selectClaudeOutput(null, "partial", "private secret", false, "SIGTERM")).toThrow("signal SIGTERM");
+    expect(selectClaudeOutput(0, "", "private secret", false)).toBe("(Claude Code 无输出)");
+  });
+
   it("writes an empty MCP configuration for no-tool calls", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qqbot-no-tools-"));
     try {

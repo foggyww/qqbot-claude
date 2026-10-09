@@ -1,11 +1,16 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AccountingLedger, AccountingError, formatCents, parseMoney } from "../plugins/accounting/ledger.js";
 import { createAccountingMcpServer } from "../plugins/accounting/mcp-server.js";
 import { handleAccountingCommand } from "../plugins/accounting/commands.js";
 import type { MessageContext } from "../src/core/types.js";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, fsyncSync: vi.fn(actual.fsyncSync) };
+});
 
 let tempRoot = "";
 let ledger: AccountingLedger;
@@ -16,6 +21,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
@@ -31,6 +37,160 @@ describe("accounting money", () => {
 });
 
 describe("AccountingLedger", () => {
+  it.each([
+    ["add", "amount"], ["add", "direction"], ["add", "delta"], ["add", "content"],
+    ["add", "occurredAt"], ["add", "occurredDate"], ["add", "createdAt"], ["add", "updatedAt"],
+    ["add", "payload"], ["add", "extraPayload"], ["add", "nullPayload"], ["add", "currentBalance"],
+    ["update", "payload"], ["update", "amount"], ["delete", "payload"], ["delete", "delta"],
+    ["set_balance", "payload"], ["set_balance", "previousBalance"], ["set_balance", "ownerQq"],
+    ["set_virtual", "payload"], ["set_virtual", "virtualBalance"], ["set_virtual", "ownerQq"],
+  ])("rejects corrupted %s receipt %s on both reads and writes", async (kind, field) => {
+    await ledger.setBalance(10001, "100", "qq-message:1:1");
+    await ledger.setVirtualBalance(10001, "200", "qq-message:2:1");
+    const input = { amount: "10", direction: "expense" as const, content: "tea", sourceId: "qq-message:3:1" };
+    const created = await ledger.addTransaction(10001, input);
+    await ledger.updateTransaction(10001, created.transaction.id, { amount: "12" }, "qq-message:4:1");
+    await ledger.deleteTransaction(10001, created.transaction.id, "qq-message:5:1");
+    const file = path.join(tempRoot, "runtime", "data", "accounting", "accounts", "10001.json");
+    const data = JSON.parse(fs.readFileSync(file, "utf-8"));
+    const operation = data.operations.find((entry: { kind: string }) => entry.kind === kind);
+    const snapshot = operation.result.transaction ?? operation.result.deletedTransaction;
+    if (field === "payload") {
+      const payload = JSON.parse(operation.payload);
+      if (kind === "add" || kind === "update") payload.amountCents = 99999900;
+      if (kind === "delete") payload.transactionId = "another-id";
+      if (kind === "set_balance") payload.newBalanceCents = 99999900;
+      if (kind === "set_virtual") payload.virtualBalanceCents = 99999900;
+      operation.payload = JSON.stringify(payload);
+    } else if (field === "extraPayload") operation.payload = JSON.stringify({ ...JSON.parse(operation.payload), unexpected: 1 });
+    else if (field === "nullPayload") operation.payload = null;
+    else if (field === "amount") snapshot.amount = "999999.00";
+    else if (field === "direction") snapshot.direction = "income";
+    else if (field === "delta") snapshot.delta = "10.00";
+    else if (field === "content") snapshot.content = "fabricated";
+    else if (field === "occurredDate") snapshot.occurredDate = "2026-02-30";
+    else if (["occurredAt", "createdAt", "updatedAt"].includes(field)) snapshot[field] = "broken";
+    else if (field === "ownerQq") operation.result.ownerQq = 20002;
+    else operation.result[field] = "not-money";
+    const corrupted = JSON.stringify(data);
+    fs.writeFileSync(file, corrupted);
+    await expect(ledger.getBalance(10001)).rejects.toMatchObject({ code: "DATA_CORRUPTED" });
+    await expect(ledger.addTransaction(10001, input)).rejects.toMatchObject({ code: "DATA_CORRUPTED" });
+    expect(fs.readFileSync(file, "utf-8")).toBe(corrupted);
+  });
+
+  it("explains replayed balance commands without claiming another setting occurred", async () => {
+    const ctx = { senderQq: 10001, rawEvent: { message_id: 100 } } as MessageContext;
+    await handleAccountingCommand("设置余额 100", "", ctx, ledger);
+    await ledger.addTransaction(10001, { amount: "10", direction: "expense", content: "tea" });
+    expect(await handleAccountingCommand("设置余额 100", "", ctx, ledger)).toBe("此设置请求已处理，未重复设置\n当前余额：90.00 元");
+  });
+
+  it("calculates history windows from Shanghai calendar dates", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-08T16:01:00Z"));
+    try {
+      const query = vi.spyOn(ledger, "listTransactions");
+      await handleAccountingCommand("历史 2", "", { senderQq: 10001 } as MessageContext, ledger);
+      expect(query).toHaveBeenCalledWith(10001, { startDate: "2026-10-08", endDate: "2026-10-09", limit: 20 });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("does not commit when file synchronization fails and can safely retry", async () => {
+    await ledger.setBalance(10001, "100");
+    const sync = vi.spyOn(fs, "fsyncSync").mockImplementationOnce(() => { throw Object.assign(new Error("injected"), { code: "EIO" }); });
+    await expect(ledger.setBalance(10001, "200", "qq-message:100:1")).rejects.toMatchObject({ code: "WRITE_FAILED" });
+    sync.mockRestore();
+    expect((await ledger.getBalance(10001)).currentBalance).toBe("100.00");
+    expect(await ledger.setBalance(10001, "200", "qq-message:100:1")).toMatchObject({ deduplicated: false, currentBalance: "200.00" });
+  });
+
+  it("returns committed success when directory synchronization fails and retains the receipt", async () => {
+    const realSync = fs.fsyncSync;
+    let calls = 0;
+    vi.spyOn(fs, "fsyncSync").mockImplementation((descriptor) => {
+      if (++calls === 2) throw Object.assign(new Error("injected"), { code: "EIO" });
+      realSync(descriptor);
+    });
+    const diagnostic = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect(await ledger.setBalance(10001, "200", "qq-message:100:1")).toMatchObject({ deduplicated: false, currentBalance: "200.00" });
+    expect(diagnostic).toHaveBeenCalledWith("[accounting] write committed, directory sync failed", "EIO");
+    expect(await ledger.setBalance(10001, "200", "qq-message:100:1")).toMatchObject({ deduplicated: true, currentBalance: "200.00" });
+  });
+
+  it("retains add receipts through edits, deletion, and a new ledger instance", async () => {
+    const input = { amount: "10", direction: "expense" as const, content: "tea", sourceId: "qq-message:10:1" };
+    const created = await ledger.addTransaction(10001, input);
+    await ledger.updateTransaction(10001, created.transaction.id, { amount: "12" }, "qq-message:11:1");
+    expect((await ledger.addTransaction(10001, input)).deduplicated).toBe(true);
+    await ledger.deleteTransaction(10001, created.transaction.id, "qq-message:12:1");
+    ledger = new AccountingLedger(path.join(tempRoot, "runtime", "data", "accounting"));
+    expect(await ledger.addTransaction(10001, input)).toMatchObject({ deduplicated: true, currentBalance: "0.00" });
+    expect((await ledger.listTransactions(10001, {})).matchedCount).toBe(0);
+    await expect(ledger.addTransaction(10001, { ...input, amount: "11" })).rejects.toMatchObject({ code: "SOURCE_ID_CONFLICT" });
+  });
+
+  it("replays all write types without overwriting intervening changes", async () => {
+    await ledger.setBalance(10001, "100", "qq-message:1:1");
+    const created = await ledger.addTransaction(10001, { amount: "10", direction: "expense", content: "tea", sourceId: "qq-message:2:1" });
+    expect(await ledger.setBalance(10001, "100.00", "qq-message:1:1")).toMatchObject({ deduplicated: true, currentBalance: "90.00" });
+    await ledger.setVirtualBalance(10001, "100", "qq-message:3:1");
+    await ledger.setVirtualBalance(10001, "200", "qq-message:4:1");
+    expect(await ledger.setVirtualBalance(10001, "100", "qq-message:3:1")).toMatchObject({ deduplicated: true, virtualBalance: "200.00" });
+    await ledger.updateTransaction(10001, created.transaction.id, { amount: "12" }, "qq-message:5:1");
+    await ledger.updateTransaction(10001, created.transaction.id, { amount: "15" }, "qq-message:6:1");
+    expect(await ledger.updateTransaction(10001, created.transaction.id, { amount: "12.00" }, "qq-message:5:1")).toMatchObject({ deduplicated: true, currentBalance: "85.00" });
+    await ledger.deleteTransaction(10001, created.transaction.id, "qq-message:7:1");
+    expect(await ledger.deleteTransaction(10001, created.transaction.id, "qq-message:7:1")).toMatchObject({ deduplicated: true, currentBalance: "100.00" });
+    expect(await ledger.updateTransaction(10001, created.transaction.id, { amount: "12" }, "qq-message:5:1")).toMatchObject({ deduplicated: true, currentBalance: "100.00" });
+    await expect(ledger.setVirtualBalance(10001, "100", "qq-message:1:1")).rejects.toMatchObject({ code: "SOURCE_ID_CONFLICT" });
+    await expect(ledger.setBalance(10001, "101", "qq-message:1:1")).rejects.toMatchObject({ code: "SOURCE_ID_CONFLICT" });
+  });
+
+  it("migrates old add receipts without resetting balances and fails closed for edited legacy data", async () => {
+    const input = { amount: "10", direction: "expense" as const, content: "tea", sourceId: "qq-message:10:1", occurredAt: "2026-08-01T00:00:00+08:00" };
+    const created = await ledger.addTransaction(10001, input);
+    const file = path.join(tempRoot, "runtime", "data", "accounting", "accounts", "10001.json");
+    const legacy = JSON.parse(fs.readFileSync(file, "utf-8"));
+    delete legacy.operations;
+    fs.writeFileSync(file, JSON.stringify(legacy));
+    expect(await ledger.addTransaction(10001, input)).toMatchObject({ deduplicated: true, currentBalance: "-10.00" });
+    await ledger.deleteTransaction(10001, created.transaction.id, "qq-message:11:1");
+    expect((await ledger.addTransaction(10001, input)).currentBalance).toBe("0.00");
+    legacy.transactions[0].updatedAt = "2026-10-01T00:00:00.000Z";
+    legacy.transactions[0].amountCents = 1200;
+    legacy.currentBalanceCents = -1200;
+    fs.writeFileSync(file, JSON.stringify(legacy));
+    await expect(ledger.addTransaction(10001, input)).rejects.toMatchObject({ code: "LEGACY_SOURCE_ID_UNVERIFIABLE" });
+    expect((await ledger.getBalance(10001)).currentBalance).toBe("-12.00");
+  });
+
+  it("rejects rolled-over and timezone-free dates, and exposes Shanghai calendar dates", async () => {
+    for (const occurredAt of ["2026-02-30T12:00:00Z", "2026-02-30", "2026-01-01T12:00:00", "10/09/2026", "2026-01-01T24:00:00Z", ""]) {
+      await expect(ledger.addTransaction(10001, { amount: "1", direction: "expense", content: "bad", occurredAt })).rejects.toMatchObject({ code: "INVALID_DATE" });
+    }
+    const created = await ledger.addTransaction(10001, { amount: "1", direction: "expense", content: "midnight", occurredAt: "2026-10-08T16:01:00Z" });
+    expect(created.transaction.occurredDate).toBe("2026-10-09");
+    expect((await ledger.listTransactions(10001, { startDate: "2026-10-09", endDate: "2026-10-09" })).matchedCount).toBe(1);
+    expect(() => parseMoney("90071992547409.92")).toThrow(AccountingError);
+    expect(parseMoney("90071992547409.91")).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
+  it("requires trustworthy message ids before direct command writes", async () => {
+    for (const message_id of [undefined, 0, NaN, "bad"]) {
+      expect(await handleAccountingCommand("设置余额 100", "", { senderQq: 10001, rawEvent: { message_id } } as MessageContext, ledger)).toContain("消息 ID");
+    }
+    expect((await ledger.getBalance(10001)).currentBalance).toBe("0.00");
+  });
+
+  it("does not treat unreadable ledgers as empty accounts", async () => {
+    const file = path.join(tempRoot, "runtime", "data", "accounting", "accounts", "10001.json");
+    fs.mkdirSync(file, { recursive: true });
+    await expect(ledger.getBalance(10001)).rejects.toMatchObject({ code: "READ_FAILED" });
+    await expect(ledger.setBalance(10001, "100", "qq-message:1:1")).rejects.toMatchObject({ code: "READ_FAILED" });
+    expect(fs.statSync(file).isDirectory()).toBe(true);
+  });
+
   it("keeps accounts isolated and stores original content", async () => {
     await ledger.setBalance(10001, "100.00");
     const expense = await ledger.addTransaction(10001, {
@@ -254,6 +414,16 @@ describe("AccountingLedger", () => {
 });
 
 describe("accounting MCP", () => {
+  it("requires source ids for every MCP write, before changing balances", async () => {
+    const server = createAccountingMcpServer(ledger);
+    for (const name of ["accounting_add_transaction", "accounting_update_transaction", "accounting_delete_transaction", "accounting_set_balance", "accounting_set_virtual_balance"]) {
+      const definition = server.tools.find((tool) => tool.name === name)!;
+      expect(definition.inputSchema.required).toContain("source_id");
+      expect(await server.handleToolCall(name, { owner_qq: 10001, transaction_id: "id", amount: "1", content: "tea", direction: "expense", balance: "100" })).toMatchObject({ ok: false, error: { code: "INVALID_ARGUMENT" } });
+    }
+    expect((await ledger.getBalance(10001)).currentBalance).toBe("0.00");
+  });
+
   it("exposes mutation, query, balance, and budget tools", async () => {
     const server = createAccountingMcpServer(ledger);
     expect(server.name).toBe("qqbot-accounting");
